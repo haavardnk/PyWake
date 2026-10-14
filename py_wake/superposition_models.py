@@ -185,7 +185,7 @@ class WeightedSum(SuperpositionModel):
                                                         (2 * sigma_sum)) * np.pi * sigma_j * sigma_k / sigma_sum
                             pair_term = 2 * np.repeat((ucn[j] * usc[j])[na], len(k), axis=0) * (ucn[k] * usc[k])
                             tmp2 = np.where(Ilxx, pair_term * cross_sigma_jk, 0.0)
-                            sum2 += np.sum(tmp2, axis=0)
+                            sum2 = sum2 + np.sum(tmp2, axis=0)
 
                 # Avoid division by zero
                 safe_Us_int = np.where(Us_int == 0, 1.0, Us_int)
