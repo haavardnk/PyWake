@@ -40,7 +40,7 @@ test_PyWake:  # name the job what we like
   - pixi run --environment test --as-is python -V
   - pixi run --environment test --as-is pytest --durations=10 -n 2
   tags:  # only runners with this tag can do the job [3]
-  - ci-ubuntu
+  - docker,ubuntu,linux,shared
   rules:
     - if: $CI_COMMIT_BRANCH == "master"
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
@@ -56,7 +56,7 @@ test_PyWake_MPI:  # name the job what we like
   - pixi run --environment parallel --as-is python -V
   - pixi run --environment parallel --as-is mpirun --allow-run-as-root -np 2 python py_wake/tests/test_utils/test_mpi.py
   tags:  # only runners with this tag can do the job [3]
-  - ci-ubuntu
+  - docker,ubuntu,linux,shared
   rules:
     - if: $CI_COMMIT_BRANCH == "master"
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
@@ -71,7 +71,7 @@ check_code_style:  # name the job what we like
   - pixi install --environment lint  # --locked
   - pixi run --environment lint --as-is lint
   tags:  # only runners with this tag can do the job [3]
-  - ci-ubuntu
+  - docker,ubuntu,linux,shared
   rules:
   - if: $CI_COMMIT_BRANCH == "master"
   - if: $CI_PIPELINE_SOURCE == "merge_request_event"
@@ -185,7 +185,7 @@ build_pages:  # "pages" is a job specifically for GitLab pages [1]
       when: manual
       allow_failure: true
   tags:  # only runners with this tag can do the job [3]
-  - ci-ubuntu
+  - docker,ubuntu,linux,shared
 
 
 # ===== publish documentation =====
@@ -205,7 +205,7 @@ pages:  # "pages" is a job specifically for GitLab pages [1]
       when: manual
       allow_failure: true
   tags:  # only runners with this tag can do the job [3]
-  - ci-ubuntu
+  - docker,ubuntu,linux,shared
 
 
 
@@ -224,4 +224,4 @@ pypi_linux:
     - python3 -m build
     - twine upload dist/* -u $TWINE_USERNAME -p $TWINE_PASSWORD
   tags:
-  - ci-ubuntu
+  - docker,ubuntu,linux,shared
