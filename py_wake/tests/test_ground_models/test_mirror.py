@@ -20,6 +20,10 @@ from py_wake.wind_turbines.power_ct_functions import PowerCtTabular
 from py_wake.deficit_models import SelfSimilarityDeficit2020
 import warnings
 from py_wake.tests.test_wind_farm_models.test_enginering_wind_farm_model import OperatableV80
+from py_wake.deficit_models.gaussian import BastankhahGaussianDeficit, TurboGaussianDeficit
+from py_wake.rotor_avg_models import CGIRotorAvg
+from py_wake.rotor_avg_models.gaussian_overlap_model import GaussianOverlapAvgModel
+from py_wake.utils.gradients import autograd
 
 
 @pytest.mark.parametrize('wfm_cls', [PropagateDownwind,
@@ -282,3 +286,50 @@ def test_MultiMirror():
 
     # check whether several repetitions are also working
     npt.assert_almost_equal(np.sum(fms[1].WS_eff), 80601.)
+
+
+class DuplicatingMirror(Mirror):
+    def _update_kwargs(self, **kwargs):
+        new_kwargs = Mirror._update_kwargs(self, **kwargs)
+        if kwargs['IJLK'][0] == 1:
+            new_kwargs.update({k: np.concatenate([v, v], 0) for k, v in kwargs.items()
+                               if '_ijlk' in k and k not in ['dh_ijlk', 'cw_ijlk']})
+        return new_kwargs
+
+
+mirror_deficit_models = [
+    lambda groundModel: NOJDeficit(k=.1, groundModel=groundModel),
+    lambda groundModel: ZongGaussianDeficit(groundModel=groundModel),
+    lambda groundModel: BastankhahGaussianDeficit(rotorAvgModel=CGIRotorAvg(7), groundModel=groundModel),
+    lambda groundModel: TurboGaussianDeficit(rotorAvgModel=GaussianOverlapAvgModel(), groundModel=groundModel),
+]
+
+
+@pytest.mark.parametrize('wfm_cls', [PropagateDownwind, All2AllIterative])
+@pytest.mark.parametrize('deficitModel', mirror_deficit_models)
+def test_Mirror_shared_inputs(wfm_cls, deficitModel):
+    site = UniformSite([1], ti=0.1)
+    x, y, h = [0, 400, 800, 200], [0, 50, -30, 300], [50, 70, 60, 80]
+
+    def get_sim_res(groundModel):
+        wfm = wfm_cls(site, V80(), deficitModel(groundModel), turbulenceModel=STF2017TurbulenceModel())
+        return wfm(x, y, h=h, wd=[260, 270, 280], ws=[6, 10])
+
+    sim_res_ref, sim_res = get_sim_res(DuplicatingMirror()), get_sim_res(Mirror())
+    npt.assert_array_equal(sim_res.WS_eff, sim_res_ref.WS_eff)
+
+    grid = XZGrid(y=0, x=np.linspace(-100, 1000, 12), z=np.linspace(1, 150, 6))
+    npt.assert_array_equal(sim_res.flow_map(grid, wd=270, ws=10).WS_eff,
+                           sim_res_ref.flow_map(grid, wd=270, ws=10).WS_eff)
+
+
+@pytest.mark.parametrize('deficitModel', mirror_deficit_models[1:])
+def test_Mirror_shared_inputs_gradients(deficitModel):
+    site = UniformSite([1], ti=0.1)
+    x, y, h = np.array([0., 400, 800]), np.array([0., 50, -30]), np.array([50., 70, 60])
+
+    def get_gradients(groundModel):
+        wfm = PropagateDownwind(site, V80(), deficitModel(groundModel), turbulenceModel=STF2017TurbulenceModel())
+        return wfm.aep_gradients(autograd, ['x', 'y', 'h'], x=x, y=y, h=h, wd=[260, 270, 280], ws=[6, 10])
+
+    npt.assert_array_almost_equal(get_gradients(Mirror()), get_gradients(DuplicatingMirror()), 10)
