@@ -77,7 +77,11 @@ class BastankhahGaussianDeficit(ConvectionDeficitModel):
         if cls.calc_deficit is not BastankhahGaussianDeficit.calc_deficit or \
                 cls._calc_deficit is not BastankhahGaussianDeficit._calc_deficit:
             return self.calc_deficit(cw_ijlk=cw_ijlk * 0, **kwargs)
-        return self.calc_deficit(cw_ijlk=cw_ijlk * 0, sigma_ijlk=sigma_ijlk, **kwargs)
+        _, sigma_sqr_ijlk, deficit_centre_ijlk, _ = self._calc_deficit(sigma_ijlk=sigma_ijlk, **kwargs)
+        exponent_ijlk = -1 / (2 * sigma_sqr_ijlk) * (cw_ijlk * 0)**2
+        if np.iscomplexobj(exponent_ijlk) or np.any(exponent_ijlk):
+            return deficit_centre_ijlk * np.exp(exponent_ijlk)
+        return deficit_centre_ijlk
 
     def wake_radius(self, D_src_il, dw_ijlk, ct_ilk, **kwargs):
         # according to Niayifar, the wake radius is twice sigma
