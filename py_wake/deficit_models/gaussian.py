@@ -48,10 +48,12 @@ class BastankhahGaussianDeficit(ConvectionDeficitModel):
     def ct_func(self, ct_ilk, **_):
         return ct_ilk[:, na]
 
-    def _calc_deficit(self, D_src_il, dw_ijlk, ct_ilk, WS_ref_ijlk, **kwargs):
+    def _calc_deficit(self, D_src_il, dw_ijlk, ct_ilk, WS_ref_ijlk, sigma_ijlk=None, **kwargs):
 
         # dimensional wake expansion
-        sigma_sqr_ijlk = (self.sigma_ijlk(D_src_il=D_src_il, dw_ijlk=dw_ijlk, ct_ilk=ct_ilk, **kwargs))**2
+        if sigma_ijlk is None:
+            sigma_ijlk = self.sigma_ijlk(D_src_il=D_src_il, dw_ijlk=dw_ijlk, ct_ilk=ct_ilk, **kwargs)
+        sigma_sqr_ijlk = sigma_ijlk**2
 
         ctx_ijlk = self.ct_func(ct_ilk=ct_ilk, dw_ijlk=dw_ijlk, D_src_il=D_src_il)
         deficit_centre_ijlk = WS_ref_ijlk * np.minimum(1,
@@ -69,6 +71,13 @@ class BastankhahGaussianDeficit(ConvectionDeficitModel):
         # Point deficit
         deficit_ijlk = deficit_centre_ijlk * np.exp(exponent_ijlk)
         return deficit_ijlk
+
+    def _calc_deficit_centre(self, sigma_ijlk, cw_ijlk, **kwargs):
+        cls = type(self)
+        if cls.calc_deficit is not BastankhahGaussianDeficit.calc_deficit or \
+                cls._calc_deficit is not BastankhahGaussianDeficit._calc_deficit:
+            return self.calc_deficit(cw_ijlk=cw_ijlk * 0, **kwargs)
+        return self.calc_deficit(cw_ijlk=cw_ijlk * 0, sigma_ijlk=sigma_ijlk, **kwargs)
 
     def wake_radius(self, D_src_il, dw_ijlk, ct_ilk, **kwargs):
         # according to Niayifar, the wake radius is twice sigma
