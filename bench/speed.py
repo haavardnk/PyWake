@@ -50,6 +50,7 @@ def summary(samples):
     last = [sample["runs"][-1]["cpu"] for sample in samples]
     return {
         "cpu": statistics.median(last),
+        "cpu_min": min(last),
         "wall": statistics.median(sample["runs"][-1]["wall"] for sample in samples),
         "first_extra": statistics.median(f - w for f, w in zip(first, last)),
         "build": statistics.median(sample["build"] for sample in samples),
@@ -70,8 +71,8 @@ def main():
     parser.add_argument("--out")
     args = parser.parse_args()
     results = {}
-    print("| Case | Base s | Head s | Speed-up | Base GB | Head GB | Memory | Head first-run extra s |")
-    print("| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |")
+    print("| Case | Base s | Head s | Speed-up | Min speed-up | Base GB | Head GB | Memory | Head first-run extra s |")
+    print("| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |")
     for case in matrix.names(args.cases):
         samples = {"base": [], "head": []}
         for pair in range(args.pairs):
@@ -82,6 +83,7 @@ def main():
         results[case] = {"base": base, "head": head}
         print(
             f"| {case} | {base['cpu']:.2f} | {head['cpu']:.2f} | {base['cpu'] / head['cpu']:.2f}x | "
+            f"{base['cpu_min'] / head['cpu_min']:.2f}x | "
             f"{base['rss'] / 1e9:.2f} | {head['rss'] / 1e9:.2f} | {head['rss'] / base['rss']:.2f} | "
             f"{head['first_extra']:.2f} |",
             flush=True,
