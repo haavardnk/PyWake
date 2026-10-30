@@ -32,11 +32,15 @@ class GaussianOverlapAvgModel(RotorAvgModel):
         func(cw_ijlk=cw_ijlk * 0, **kwargs)
 
     def __call__(self, func, cw_ijlk, D_dst_ijl, **kwargs):
-        res_ijlk = func(cw_ijlk=cw_ijlk * 0, D_dst_ijl=D_dst_ijl, **kwargs)
-        if not hasattr(func.__self__, 'sigma_ijlk'):
+        deficit_model = func.__self__
+        if not hasattr(deficit_model, 'sigma_ijlk'):
             raise AttributeError(
-                f"'{func.__self__.__class__.__name__}' has no attribute 'sigma_ijlk', which is needed by the GaussianOverlapAvgModel")
-        sigma_ijlk = func.__self__.sigma_ijlk(**kwargs)
+                f"'{deficit_model.__class__.__name__}' has no attribute 'sigma_ijlk', which is needed by the GaussianOverlapAvgModel")
+        sigma_ijlk = deficit_model.sigma_ijlk(**kwargs)
+        if hasattr(deficit_model, '_calc_deficit_centre') and func == deficit_model.calc_deficit:
+            res_ijlk = deficit_model._calc_deficit_centre(sigma_ijlk, cw_ijlk=cw_ijlk, D_dst_ijl=D_dst_ijl, **kwargs)
+        else:
+            res_ijlk = func(cw_ijlk=cw_ijlk * 0, D_dst_ijl=D_dst_ijl, **kwargs)
         r_sigma_ijlk = (D_dst_ijl / 2)[..., na] / sigma_ijlk
         cw_sigma_ijlk = gradients.cabs(cw_ijlk / sigma_ijlk)
         shape = np.broadcast_shapes(r_sigma_ijlk.shape, cw_sigma_ijlk.shape)
