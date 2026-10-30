@@ -1,4 +1,5 @@
 import argparse
+import gc
 import json
 import time
 
@@ -22,6 +23,7 @@ def main():
     built = time.perf_counter()
     runs = []
     for _ in range(args.runs):
+        gc.collect()
         cpu, wall = time.process_time(), time.perf_counter()
         case.run(wfm)
         runs.append({"cpu": time.process_time() - cpu, "wall": time.perf_counter() - wall})

@@ -20,7 +20,9 @@ python bench/profile_case.py --root . --case ogtp-grid400
 - `speed.py` runs each case in fresh, single-threaded processes, alternating base and head. It
   reports the median CPU time of the last run, the ratio of the fastest runs (robust when the machine
   is loaded, since load only adds time), the peak RSS of the process and the extra CPU time of the
-  first run (numba compilation).
+  first run (numba compilation). Each run starts after `gc.collect()`: py_wake results sit in
+  reference cycles, so without it the previous run's arrays can survive into the next run and
+  inflate its peak memory by an amount that depends on garbage-collector timing.
 - Cases are `<model>-<farm>`. Models: `ogtp` (TurboGaussian, Mirror, Gaussian overlap, SquaredSum,
   deficit scaled with the downstream ambient speed), `park2` (NOJLocal with area overlap,
   LinearSum), `fugamultilut` (two LUTs), `turbopark`, `noj`, `bastankhah`, `fuga`. Farms: `hr1`
