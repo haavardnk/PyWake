@@ -22,6 +22,8 @@ from py_wake.wind_turbines.power_ct_functions import PowerCtFunction
 from py_wake.superposition_models import WeightedSum, SquaredSum
 import warnings
 from py_wake.ground_models.ground_models import Mirror
+from numpy import newaxis as na
+from py_wake.deficit_models.utils import ct2a_mom1d
 from py_wake.deficit_models.gaussian import NiayifarGaussianDeficit, CarbajofuertesGaussianDeficit, \
     ZongGaussianDeficit, TurboGaussianDeficit, IEA37SimpleBastankhahGaussianDeficit
 from py_wake.flow_map import XYGrid
@@ -203,3 +205,35 @@ def test_GaussianOverlapAvgModel_deficit_centre_gradients(gradient_method, groun
         npt.assert_array_almost_equal(gradients, get_gradients(), 15)
     else:
         npt.assert_array_equal(gradients, get_gradients())
+
+
+@pytest.mark.parametrize('cw', [0., np.inf, np.nan, 1e300 + 1e300j, 1 + 1e-20j, np.inf * 1j])
+def test_calc_deficit_centre_non_finite(cw):
+    kwargs = dict(D_src_il=np.array([[80., 0., 1e-161, 240.]]),
+                  dw_ijlk=np.array([0., 400., -50.])[na, :, na, na],
+                  ct_ilk=np.array([.8, 0., .5, 1.2])[na, :, na],
+                  TI_ilk=np.array([.06, 0., .1, .06])[na, :, na],
+                  WS_ref_ijlk=np.full((1, 1, 4, 1), 10.))
+    cw_ijlk = np.broadcast_to(np.array([1., cw, 0.])[na, :, na, na], (1, 3, 4, 1))
+    deficitModel = TurboGaussianDeficit(A=.04, ct2a=ct2a_mom1d, ctlim=.96)
+    with np.errstate(all='ignore'):
+        expected = deficitModel.calc_deficit(cw_ijlk=cw_ijlk * 0, **kwargs)
+        actual = deficitModel._calc_deficit_centre(deficitModel.sigma_ijlk(**kwargs), cw_ijlk=cw_ijlk, **kwargs)
+    assert np.isnan(expected).any() and np.isfinite(expected).any()
+    assert actual.dtype == expected.dtype
+    assert np.broadcast_to(actual, expected.shape).tobytes() == expected.tobytes()
+
+
+@pytest.mark.parametrize('dcw', [0, 1e-20j])
+def test_calc_deficit_centre_skips_unit_exponential(dcw, monkeypatch):
+    kwargs = dict(D_src_il=np.array([[80., 120.]]), dw_ijlk=np.array([200., 400.])[na, :, na, na],
+                  ct_ilk=np.array([.8, .5])[na, :, na], TI_ilk=np.full((1, 2, 1), .06),
+                  WS_ref_ijlk=np.full((1, 1, 2, 1), 10.))
+    cw_ijlk = np.array([[30., -50.]])[..., na, na] + dcw
+    deficitModel = TurboGaussianDeficit()
+    expected = deficitModel.calc_deficit(cw_ijlk=cw_ijlk * 0, **kwargs)
+    if not dcw:
+        monkeypatch.setattr(np, 'exp', None)
+    actual = deficitModel._calc_deficit_centre(deficitModel.sigma_ijlk(**kwargs), cw_ijlk=cw_ijlk, **kwargs)
+    assert actual.dtype == expected.dtype
+    assert actual.tobytes() == expected.tobytes()
