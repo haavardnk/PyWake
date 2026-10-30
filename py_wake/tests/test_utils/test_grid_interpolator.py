@@ -1,4 +1,6 @@
 
+import pickle
+
 import matplotlib.pyplot as plt
 import pytest
 import xarray as xr
@@ -6,6 +8,7 @@ import xarray as xr
 from py_wake import np
 from py_wake.tests import npt
 from py_wake.tests.check_speed import timeit
+from py_wake.utils.numpy_utils import Numpy32
 from py_wake.utils.grid_interpolator import (
     EqDistRegGrid2DInterpolator,
     GridInterpolator,
@@ -194,6 +197,124 @@ def compare_speed():
         x2, t2 = timeit(interp, verbose=True, line_profile=0, profile_funcs=[GridInterpolator.__call__])()
         npt.assert_array_almost_equal(x1, x2.reshape(16, len(coords.wd), len(coords.ws)))
         # print(np.mean(t1) / np.mean(t2))
+
+
+def stock_interpolation(interpolator, xp, monkeypatch, **kwargs):
+    with monkeypatch.context() as m:
+        m.setattr(GridInterpolator, '_compiled_limit', lambda *args: None)
+        return interpolator(xp, **kwargs)
+
+
+def random_axis(rng, n, irregular):
+    if irregular:
+        return np.cumsum(rng.uniform(.1, 3, n)) - 2
+    return np.arange(n) * rng.choice([.01, .5, 20.]) + rng.uniform(-5, 5)
+
+
+def random_table(rng, shape):
+    order = rng.permutation(len(shape))
+    V = rng.choice([1., -1., 1e16, 3.3, -0., 1e-300], size=tuple(np.array(shape)[order]))
+    return (V * rng.uniform(.5, 2, V.shape)).transpose(np.argsort(order))
+
+
+def random_points(rng, x, n_points):
+    columns = []
+    for xi in x:
+        span = xi[-1] - xi[0]
+        column = rng.uniform(xi[0] - span * .2, xi[-1] + span * .2, n_points)
+        column = np.where(rng.random(n_points) < .2, rng.choice(xi, n_points), column)
+        column = np.where(rng.random(n_points) < .1, rng.choice([np.inf, -np.inf, -0.], n_points), column)
+        columns.append(column)
+    return np.array(columns).T
+
+
+@pytest.mark.parametrize('seed', range(4))
+def test_grid_interpolator_compiled_limit_matches_stock(seed, monkeypatch):
+    rng = np.random.default_rng(seed)
+    for _ in range(200):
+        n_dims = rng.integers(1, 5)
+        x = [random_axis(rng, rng.integers(2, 9), rng.random() < .3) for _ in range(n_dims)]
+        method = list(rng.choice(['linear', 'nearest'], n_dims))
+        interpolator = GridInterpolator(x, random_table(rng, [len(xi) for xi in x]), method=method, bounds='limit')
+        xp = random_points(rng, x, rng.choice([1, 3, 50]))
+        assert interpolator._compiled_limit(xp, [m == 'linear' for m in method]) is not None
+        assert interpolator(xp).tobytes() == stock_interpolation(interpolator, xp, monkeypatch).tobytes()
+
+
+@pytest.mark.parametrize('x,V,xp', [
+    ([np.array([0., 1, 1, 2])], np.array([0., 1, 2, 3]), np.array([[1.], [.5], [1.5]])),
+    ([np.array([0., 1, 1, 2])], np.array([0., 1, 2, 3]), np.array([[1.]])),
+    ([np.array([0., 1, 3])] * 7, np.random.default_rng(0).random((3,) * 7), np.full((1, 7), 1.3)),
+    ([np.array([0., 1, 3])] * 7, np.random.default_rng(0).random((3,) * 7), np.full((2, 7), 1.3)),
+])
+def test_grid_interpolator_compiled_limit_cases(x, V, xp, monkeypatch):
+    interpolator = GridInterpolator(x, V, bounds='limit')
+    assert interpolator._compiled_limit(xp, [True] * len(x)) is not None
+    assert interpolator(xp).tobytes() == stock_interpolation(interpolator, xp, monkeypatch).tobytes()
+
+
+def test_grid_interpolator_compiled_limit_negative_zero(monkeypatch):
+    interpolator = GridInterpolator([np.arange(3.)] * 4, -np.zeros((3, 3, 3, 3)), bounds='limit')
+    for xp in [np.full((1, 4), .5), np.full((3, 4), .5)]:
+        assert interpolator(xp).tobytes() == stock_interpolation(interpolator, xp, monkeypatch).tobytes()
+
+
+def test_grid_interpolator_compiled_limit_nan(monkeypatch):
+    interpolator = GridInterpolator([np.arange(3.), np.array([0., 1, 3])], np.arange(9.).reshape(3, 3), bounds='limit')
+    xp = np.array([[np.nan, 1.], [1., np.nan], [.5, 2.]])
+    res = interpolator(xp)
+    assert np.isnan(res[:2]).all()
+    assert res[2:].tobytes() == stock_interpolation(interpolator, xp[2:], monkeypatch).tobytes()
+
+
+axis3, axis4 = np.array([0., 1, 2]), np.array([100., 200, 300, 400])
+
+
+@pytest.mark.parametrize('x,V,xp,kwargs', [
+    ([axis3, axis4], np.arange(12.).reshape(3, 4), np.array([[1., 250.]]) * 1j, {}),
+    ([axis3, axis4], np.arange(12.).reshape(3, 4), np.array([[1., 250.]], dtype=np.float32), {}),
+    ([axis3, axis4], np.arange(12.).reshape(3, 4), np.array([[1., 250.]]), {'bounds': 'check'}),
+    ([axis3, axis4], np.arange(12.).reshape(3, 4), np.array([[1., 250.]]), {'deg': True}),
+    ([axis3, axis4], np.arange(12).reshape(3, 4), np.array([[1., 250.]]), {}),
+    ([axis3, axis4], np.arange(12.).reshape(3, 4)[:, ::-1], np.array([[1., 250.]]), {}),
+    ([axis3, axis4], np.arange(24.).reshape(3, 4, 2), np.array([[1., 250.]]), {}),
+    ([axis3, [100, 200, 300, 400]], np.arange(12.).reshape(3, 4), np.array([[1., 250.]]), {}),
+    ([axis3, np.array([0.])], np.arange(3.).reshape(3, 1), np.array([[1., 0.]]), {}),
+    ([axis3, np.array([0., 3, 1, 4])], np.arange(12.).reshape(3, 4), np.array([[1., 2.5]]), {}),
+    ([axis3, np.array([0., np.nan, 1, 4])], np.arange(12.).reshape(3, 4), np.array([[1., 2.5]]), {}),
+    ([np.arange(2.)] * 8, np.arange(256.).reshape((2,) * 8), np.full((1, 8), .3), {}),
+    ([axis3, axis4], np.arange(12.).reshape(3, 4), np.array([[[1., 250.]]]), {}),
+])
+def test_grid_interpolator_compiled_limit_fallback(x, V, xp, kwargs, monkeypatch):
+    interpolator = GridInterpolator(x, V, bounds='limit')
+    calls = []
+    compiled_limit = GridInterpolator._compiled_limit
+    monkeypatch.setattr(GridInterpolator, '_compiled_limit',
+                        lambda self, *args: calls.append(compiled_limit(self, *args)) or calls[-1])
+    res = interpolator(xp, **kwargs)
+    assert len(calls) <= 1 and all(c is None for c in calls)
+    npt.assert_array_equal(res, stock_interpolation(interpolator, xp, monkeypatch, **kwargs))
+
+
+def test_grid_interpolator_compiled_limit_numpy32():
+    interpolator = GridInterpolator([axis3, axis4], np.arange(12.).reshape(3, 4), bounds='limit')
+    xp = np.array([[1., 250.]])
+    assert interpolator._compiled_limit(xp, [True, True]) is not None
+    with Numpy32():
+        assert interpolator._compiled_limit(xp, [True, True]) is None
+
+
+def test_grid_interpolator_compiled_limit_pickle(monkeypatch):
+    V = np.arange(24.).reshape(4, 3, 2).transpose(1, 2, 0)
+    interpolator = GridInterpolator([axis3, np.array([0., 1]), axis4], V, bounds='limit')
+    xp = np.array([[.5, .3, 220.], [2., 1., 400.]])
+    res = interpolator(xp)
+    assert '_compiled_layout' in interpolator.__dict__
+    state = interpolator.__getstate__()
+    assert '_compiled_layout' not in state
+    unpickled = pickle.loads(pickle.dumps(interpolator))
+    assert unpickled(xp).tobytes() == res.tobytes() == stock_interpolation(unpickled, xp, monkeypatch).tobytes()
+    assert np.shares_memory(unpickled._compiled_layout.V, unpickled.V)
 
 
 if __name__ == '__main__':
