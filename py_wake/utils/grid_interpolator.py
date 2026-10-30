@@ -1,9 +1,115 @@
 from autograd.numpy.numpy_boxes import ArrayBox
+import functools
+import numba
+import numpy
 from numpy import atleast_1d
 from numpy import newaxis as na
+from typing import NamedTuple
 
 from py_wake import np
 from py_wake.utils import gradients
+
+
+_NUMPY_PAIRWISE_BLOCKSIZE = 128
+
+
+@numba.njit(error_model='numpy')
+def _numpy_pairwise_sum(terms):
+    r = terms[:8].copy()
+    i = 8
+    while i < len(terms) - len(terms) % 8:
+        for j in range(8):
+            r[j] = r[j] + terms[i + j]
+        i += 8
+    res = ((r[0] + r[1]) + (r[2] + r[3])) + ((r[4] + r[5]) + (r[6] + r[7]))
+    while i < len(terms):
+        res = res + terms[i]
+        i += 1
+    return 0. + res
+
+
+@numba.njit(error_model='numpy')
+def _search_right(axis, start, n, value):
+    lo, hi = 0, n
+    while lo < hi:
+        mid = (lo + hi) >> 1
+        if value < axis[start + mid]:
+            hi = mid
+        else:
+            lo = mid + 1
+    return lo
+
+
+@numba.njit(error_model='numpy')
+def _grid_position(value, axes, start, x0, dx, n, irregular, linear):
+    if irregular:
+        i0 = min(max(_search_right(axes, start, n, value) - 1, 0), n - 2)
+        xpi = i0 + (value - axes[start + i0]) / (axes[start + i0 + 1] - axes[start + i0])
+    else:
+        xpi = (value - x0) / dx
+    if xpi <= 0:
+        xpi = 0.
+    if xpi >= n - 1:
+        xpi = n - 1.
+    if linear:
+        return xpi
+    return numpy.floor(xpi + .5)
+
+
+def _corner_bits(linear):
+    bits, bit = [], sum(linear)
+    for is_linear in linear:
+        bit -= is_linear
+        bits.append(bit if is_linear else -1)
+    return tuple(bits)
+
+
+class _CompiledLayout(NamedTuple):
+    V: numpy.ndarray
+    strides: tuple
+    axes: numpy.ndarray
+    axes_start: tuple
+    x0: tuple
+    dx: tuple
+    n: tuple
+
+
+@functools.lru_cache
+def _limit_kernel(corner_bit, irregular):
+    n_dims = len(corner_bit)
+    n_corners = 2**sum(bit >= 0 for bit in corner_bit)
+    pairwise_sum = n_corners >= 8
+
+    @numba.njit(error_model='numpy')
+    def interpolate(xp_T, V, strides, axes, axes_start, x0, dx, n, res):
+        n_points = xp_T.shape[1]
+        pairwise = pairwise_sum and n_points == 1
+        terms = numpy.empty(n_corners)
+        weight = numpy.empty((n_dims, 2))
+        offset = numpy.empty((n_dims, 2), dtype=numpy.int64)
+        for p in range(n_points):
+            for d in range(n_dims):
+                xpi = _grid_position(xp_T[d, p], axes, axes_start[d], x0[d], dx[d], n[d], irregular, corner_bit[d] >= 0)
+                lower = 0 if numpy.isnan(xpi) else int(xpi)
+                xpif = xpi - lower
+                weight[d, 0] = 1 - xpif
+                weight[d, 1] = xpif
+                offset[d, 0] = lower * strides[d]
+                offset[d, 1] = min(lower + 1, n[d] - 1) * strides[d]
+            total = 0.
+            for corner in range(n_corners):
+                w = 1.
+                index = 0
+                for d in range(n_dims):
+                    side = (corner >> corner_bit[d]) & 1 if corner_bit[d] >= 0 else 0
+                    w = w * weight[d, side]
+                    index += offset[d, side]
+                if pairwise:
+                    terms[corner] = w * V[index]
+                else:
+                    total = total + w * V[index]
+            res[p] = _numpy_pairwise_sum(terms) if pairwise else total
+    return interpolate
 
 
 class GridInterpolator(object):
@@ -66,6 +172,10 @@ class GridInterpolator(object):
         assert all([m in ['linear', 'nearest'] for m in method]), 'method must be "linear" or "nearest"'
         assert len(method) in [1, len(self.x)]
         linear = [method[min(len(method) - 1, i)] == 'linear' for i in range(len(self.x))]
+        if (bounds or self.bounds) == 'limit' and not deg:
+            res = self._compiled_limit(xp, linear)
+            if res is not None:
+                return res
         chunks = np.maximum(2**np.sum(linear) * np.prod(np.shape(xp)) * 8 / 1024**2 // 100, 1)
         if chunks > 1:
             return np.concatenate([self.__call__(xp_, method, bounds, deg) for xp_ in np.array_split(xp, chunks)])
@@ -132,6 +242,37 @@ class GridInterpolator(object):
         if deg:
             res = gradients.mod(res, 360)
         return np.reshape(res, xp_shape[:-1] + self.V.shape[len(self.x):])
+
+    def __getstate__(self):
+        return {k: v for k, v in self.__dict__.items() if k != '_compiled_layout'}
+
+    def _compiled_limit(self, xp, linear):
+        if np.backend is not numpy or type(xp) is not numpy.ndarray or xp.dtype != numpy.float64 or \
+                not 1 <= xp.ndim <= 2 or xp.shape[-1] != len(self.x) or 2**sum(linear) > _NUMPY_PAIRWISE_BLOCKSIZE or \
+                self._compiled_layout is None:
+            return None
+        layout = self._compiled_layout
+        xp_T = numpy.require(numpy.atleast_2d(xp).T, requirements=['C', 'W'])
+        res = numpy.empty(xp_T.shape[1])
+        interpolate = _limit_kernel(_corner_bits(linear), len(self.irregular_axes_indexes) > 0)
+        interpolate(xp_T, layout.V, layout.strides, layout.axes, layout.axes_start, layout.x0, layout.dx, layout.n, res)
+        return res
+
+    @functools.cached_property
+    def _compiled_layout(self):
+        V = self.V
+        axes = [x[:n] for x, n in zip(self.x, self.n)]
+        if not (V.dtype == numpy.float64 and V.ndim == len(axes) and all(self.n >= 2) and
+                all(type(x) is numpy.ndarray and x.dtype == numpy.float64 for x in axes)):
+            return None
+        if len(self.irregular_axes_indexes) and not all(numpy.all(numpy.diff(x) >= 0) for x in axes):
+            return None
+        V_memory_order = V.transpose(numpy.argsort(V.strides)[::-1])
+        if not V_memory_order.flags.c_contiguous:
+            return None
+        return _CompiledLayout(V=V_memory_order.reshape(-1), strides=tuple(s // V.itemsize for s in V.strides),
+                               axes=numpy.concatenate(axes), axes_start=tuple([0] + numpy.cumsum(self.n).tolist()[:-1]),
+                               x0=tuple(self.x0.tolist()), dx=tuple(self.dx.tolist()), n=tuple(self.n.tolist()))
 
 
 class EqDistRegGrid2DInterpolator():
