@@ -210,6 +210,8 @@ def _accumulating_and_stock(wfm, monkeypatch, *args, **kwargs):
     (PropagateDownwind, None, False),
     (PropagateDownwind, STF2017TurbulenceModel(), False),
     (PropagateDownwind, CrespoHernandez(), False),
+    (PropagateDownwind, GCLTurbulence(), False),
+    (PropagateDownwind, STF2017TurbulenceModel(addedTurbulenceSuperpositionModel=SquaredSum()), False),
     (PropagateUpDownIterative, STF2017TurbulenceModel(), True),
     (All2AllIterative, CrespoHernandez(), True)])
 @pytest.mark.parametrize('superpositionModel', [LinearSum(), SquaredSum()])
@@ -262,6 +264,30 @@ def test_accumulating_superposition_subclass():
     sim_res = PropagateDownwind(superpositionModel=MaxLinearSum(), **kwargs)(wt9_x, wt9_y)
     ref = PropagateDownwind(superpositionModel=MaxSum(), **kwargs)(wt9_x, wt9_y)
     npt.assert_array_equal(sim_res.WS_eff, ref.WS_eff)
+
+
+@pytest.mark.parametrize('wd,ws', [(270, 8), ([270, 280], [8, 9])])
+def test_accumulating_turbulence_ijl(wd, ws, monkeypatch):
+    class IJLTurbulence(TurbulenceModel):
+        def calc_added_turbulence(self, dw_ijlk, **_):
+            return np.full(dw_ijlk.shape[:3], .01)
+
+    site = Hornsrev1Site()
+    x, y = site.initial_position.T
+    wfm = PropagateDownwind(site, V80(), BastankhahGaussianDeficit(), turbulenceModel=IJLTurbulence())
+    sim_res, ref, _ = _accumulating_and_stock(wfm, monkeypatch, x, y, wd=wd, ws=ws)
+    assert sim_res.TI_eff.values.tobytes() == ref.TI_eff.values.tobytes()
+
+
+def test_accumulating_turbulence_subclass():
+    class MaxCrespoHernandez(CrespoHernandez):
+        def calc_effective_TI(self, TI_xxx, add_turb_jxxx):
+            return TI_xxx + np.max(add_turb_jxxx, 0)
+
+    kwargs = dict(site=UniformSite(), windTurbines=V80(), wake_deficitModel=BastankhahGaussianDeficit())
+    sim_res = PropagateDownwind(turbulenceModel=MaxCrespoHernandez(), **kwargs)(wt9_x, wt9_y)
+    ref = PropagateDownwind(turbulenceModel=CrespoHernandez(addedTurbulenceSuperpositionModel=MaxSum()), **kwargs)(wt9_x, wt9_y)
+    npt.assert_array_equal(sim_res.TI_eff, ref.TI_eff)
 
 
 def test_accumulating_squaredSum_speedups():

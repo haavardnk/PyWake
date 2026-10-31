@@ -24,6 +24,7 @@ from py_wake.rotor_avg_models.rotor_avg_model import (
 from py_wake.superposition_models import (
     CumulativeWakeSum,
     LinearSum,
+    SqrMaxSum,
     SquaredSum,
     SuperpositionModel,
     WeightedSum,
@@ -519,7 +520,7 @@ def _accumulates(values):
 def _move_to_accumulator(superpositionModel, value_nk, n_wt):
     shape = value_nk[0].shape[1:]
     # np.sum(value_jlk, 0) is pairwise, not sequential, when each row holds one value
-    if type(superpositionModel) in (LinearSum, SquaredSum) and numpy.prod(shape) > 1:
+    if type(superpositionModel) in (LinearSum, SquaredSum, SqrMaxSum) and numpy.prod(shape) > 1:
         sum_jlk = superpositionModel.accumulator((n_wt,) + shape)
         _accumulate(superpositionModel, sum_jlk, value_nk.pop(), 0)
         return sum_jlk
@@ -649,6 +650,7 @@ class PropagateUpDownIterative(EngineeringWindFarmModel):
 
         deficit_nk = []
         deficit_sum_jlk = None
+        add_turb_sum_jlk = None
         deficit_centre_nk = []
         blockage_nk = []
         uc_nk = []
@@ -726,7 +728,10 @@ class PropagateUpDownIterative(EngineeringWindFarmModel):
                     WS_eff_lk = WS_eff_lk - self.blockage_deficitModel.superpositionModel(get_value2WT(blockage_nk))
                 WS_eff_mk.append(WS_eff_lk)
 
-                if self.turbulenceModel:
+                if add_turb_sum_jlk is not None:
+                    TI_eff_lk = self.turbulenceModel.superpositionModel.accumulated_effective_TI(TI_mk[m], add_turb_sum_jlk[j])
+                    TI_eff_mk.append(TI_eff_lk)
+                elif self.turbulenceModel:
                     add_turb2WT = np.array([d_nk2[i] for d_nk2, i in zip(add_turb_nk, range(j)[::-1])])
                     TI_eff_lk = self.turbulenceModel.calc_effective_TI(TI_mk[m], add_turb2WT)
                     TI_eff_mk.append(TI_eff_lk)
@@ -859,11 +864,15 @@ class PropagateUpDownIterative(EngineeringWindFarmModel):
                     _accumulate(self.superpositionModel, deficit_sum_jlk, deficit[0], j)
 
                 # Calculate added turbulence intensity.
-                if self.turbulenceModel:
+                if add_turb_sum_jlk is not None:
+                    _accumulate(self.turbulenceModel.superpositionModel, add_turb_sum_jlk, self.turbulenceModel(**model_kwargs)[0], j)
+                elif self.turbulenceModel:
                     add_turb_nk.append(self.turbulenceModel(**model_kwargs)[0])
 
                 if j == 0 and self.direction == 'down' and _accumulates(deficit_nk + blockage_nk + add_turb_nk):
                     deficit_sum_jlk = _move_to_accumulator(self.superpositionModel, deficit_nk, I)
+                    if self.turbulenceModel and type(self.turbulenceModel).calc_effective_TI is TurbulenceModel.calc_effective_TI:
+                        add_turb_sum_jlk = _move_to_accumulator(self.turbulenceModel.superpositionModel, add_turb_nk, I)
 
         WS_eff_jlk, ct_jlk = np.array(WS_eff_mk), np.array(ct_jlk)
 
