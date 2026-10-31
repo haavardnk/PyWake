@@ -720,3 +720,15 @@ def test_add_blockage_downstream_only(wfm_cls, blockage, monkeypatch):
     ref = wfm(x, y, wd=np.arange(0, 360, 30), ws=[6, 8])
     for k in ['WS_eff', 'TI_eff', 'CT', 'Power']:
         assert sim_res[k].values.tobytes() == ref[k].values.tobytes()
+
+
+def test_wind_direction_dependent_positions():
+    site = Hornsrev1Site()
+    x, y = site.initial_position[:9].T
+    wd = [0, 90, 270, 275]
+    rng = np.random.default_rng(0)
+    x_il, y_il = [v[:, na] + rng.uniform(-50, 50, (9, 4)) for v in [x, y]]
+    wfm = PropagateDownwind(site, V80(), BastankhahGaussianDeficit())
+    sim_res = wfm(x_il, y_il, wd=wd, ws=[8, 10])
+    for l in range(len(wd)):
+        npt.assert_array_equal(sim_res.WS_eff.values[:, l], wfm(x_il[:, l], y_il[:, l], wd=wd[l], ws=[8, 10]).WS_eff.values[:, 0])
