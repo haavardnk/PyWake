@@ -44,9 +44,8 @@ class GaussianOverlapAvgModel(RotorAvgModel):
         r_sigma_ijlk = (D_dst_ijl / 2)[..., na] / sigma_ijlk
         cw_sigma_ijlk = gradients.cabs(cw_ijlk / sigma_ijlk)
         shape = np.broadcast_shapes(r_sigma_ijlk.shape, cw_sigma_ijlk.shape)
-        r_sigma = np.broadcast_to(r_sigma_ijlk, shape).flatten()
-        cw_sigma = np.broadcast_to(cw_sigma_ijlk, shape).flatten()
-        overlap_factor_ijlk = self.overlap_interpolator(np.array([r_sigma, cw_sigma]).T).reshape(shape)
+        xp = np.stack([np.broadcast_to(r_sigma_ijlk, shape), np.broadcast_to(cw_sigma_ijlk, shape)]).reshape(2, -1).T
+        overlap_factor_ijlk = self.overlap_interpolator(xp).reshape(shape)
         return res_ijlk * overlap_factor_ijlk
 
 
