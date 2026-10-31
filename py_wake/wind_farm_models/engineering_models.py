@@ -688,6 +688,10 @@ class PropagateUpDownIterative(EngineeringWindFarmModel):
         i_wd_l = np.arange(L).astype(int)
         is_w_or_c_sum = isinstance(self.superpositionModel, (WeightedSum, CumulativeWakeSum))
 
+        def get_pos(v_ilk, i_wt_l, i_wd_l):
+            return v_ilk[i_wt_l, np.minimum(i_wd_l, v_ilk.shape[1] - 1).astype(int)]
+        xyh_jlk = [get_pos(kwargs[k + '_ilk'], wt_order_indices_ld.T, i_wd_l) for k in 'xyh']
+
         wt_kwargs = self.get_wt_kwargs(TI_eff_ilk, kwargs)
 
         # Iterate over turbines in down wind order
@@ -799,11 +803,9 @@ class PropagateUpDownIterative(EngineeringWindFarmModel):
                 custom_args = (set([k for k in self.args4all if k.endswith('_ilk')]) - set(model_kwargs)) & set(kwargs)
                 model_kwargs.update({k: ilk2mk(kwargs[k])[m][na] for k in custom_args})
 
-                def get_pos(v_ilk, i_wt_l, i_wd_l):
-                    return v_ilk[i_wt_l, np.minimum(i_wd_l, v_ilk.shape[1] - 1).astype(int)]
-                dst_xyh_jlk = [get_pos(kwargs[k + '_ilk'], i_dw.T, i_wd_l) for k in 'xyh']
+                dst_xyh_jlk = [v[j + 1:] for v in xyh_jlk]
                 dw_ijlk, hcw_ijlk, dh_ijlk = self.site.distance(
-                    *[get_pos(kwargs[k + '_ilk'], i_wt_l, i_wd_l)[na] for k in 'xyh'], wd_l=wd, WD_ilk=WD_mk[m][na],
+                    *[v[j:j + 1] for v in xyh_jlk], wd_l=wd, WD_ilk=WD_mk[m][na],
                     time=kwargs.get('time', False), dst_xyh_jlk=dst_xyh_jlk)
 
                 for inputModidifierModel in self.inputModifierModels:
