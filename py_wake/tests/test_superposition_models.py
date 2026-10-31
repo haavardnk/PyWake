@@ -5,7 +5,9 @@ from py_wake.site._site import UniformSite
 from py_wake.superposition_models import LinearSum, SquaredSum, MaxSum, SqrMaxSum, WeightedSum, CumulativeWakeSum, \
     SuperpositionModel
 from py_wake.tests import npt
-from py_wake.wind_farm_models.engineering_models import PropagateDownwind, All2AllIterative
+from py_wake.wind_farm_models import engineering_models
+from py_wake.wind_farm_models.engineering_models import PropagateDownwind, PropagateUpDownIterative, \
+    All2AllIterative
 from py_wake.deficit_models.noj import NOJDeficit
 from py_wake.turbulence_models import TurbulenceModel
 from py_wake.flow_map import HorizontalGrid, Points
@@ -20,7 +22,11 @@ from py_wake.deficit_models.selfsimilarity import SelfSimilarityDeficit
 from py_wake.utils.model_utils import get_models
 from py_wake.tests.test_wind_farm_models.test_enginering_wind_farm_model import OperatableV80
 from py_wake.turbulence_models.crespo import CrespoHernandez
+from py_wake.turbulence_models.gcl_turb import GCLTurbulence
+from py_wake.turbulence_models.stf import STF2017TurbulenceModel
 from py_wake.rotor_avg_models.rotor_avg_model import CGIRotorAvg
+from py_wake.utils.gradients import autograd, cs, fd
+from py_wake.utils.numpy_utils import Numpy32
 
 d02 = 8.1 - 5.7
 d12 = 8.1 - 4.90473373
@@ -190,3 +196,79 @@ def test_squaredSum_speedups():
                            blockage_deficitModel=SelfSimilarityDeficit(exclude_wake=False), superpositionModel=SquaredSum())
     with pytest.raises(AssertionError, match='SquaredSum only works for deficit - not speedups'):
         wfm([0, 200, 400], [0, 0, 0], wd=270)
+
+
+def _accumulating_and_stock(wfm, monkeypatch, *args, **kwargs):
+    accumulate, calls = engineering_models._accumulate, []
+    monkeypatch.setattr(engineering_models, '_accumulate', lambda *args: calls.append(accumulate(*args)))
+    sim_res = wfm(*args, **kwargs)
+    monkeypatch.setattr(engineering_models, '_accumulates', lambda values: False)
+    return sim_res, wfm(*args, **kwargs), len(calls)
+
+
+@pytest.mark.parametrize('wfm_cls,turbulenceModel,blockage', [
+    (PropagateDownwind, None, False),
+    (PropagateDownwind, STF2017TurbulenceModel(), False),
+    (PropagateDownwind, CrespoHernandez(), False),
+    (PropagateUpDownIterative, STF2017TurbulenceModel(), True),
+    (All2AllIterative, CrespoHernandez(), True)])
+@pytest.mark.parametrize('superpositionModel', [LinearSum(), SquaredSum()])
+@pytest.mark.parametrize('wd,ws', [(np.arange(0, 360, 30), [6, 8, 10]), (np.arange(0, 360, 30), 8), (270, [6, 8]), (270, 8)])
+def test_accumulating_superposition(wfm_cls, turbulenceModel, blockage, superpositionModel, wd, ws, monkeypatch):
+    kwargs = {'turbulenceModel': turbulenceModel}
+    if blockage:
+        kwargs['blockage_deficitModel'] = SelfSimilarityDeficit(superpositionModel=LinearSum(), use_effective_ws=True)
+    site = Hornsrev1Site()
+    x, y = site.initial_position.T
+    wfm = wfm_cls(site, V80(), BastankhahGaussianDeficit(use_effective_ws=True), superpositionModel=superpositionModel,
+                  **kwargs)
+    sim_res, ref, calls = _accumulating_and_stock(wfm, monkeypatch, x, y, wd=wd, ws=ws)
+    assert (calls > 0) == (np.size(wd) * np.size(ws) > 1)
+    for k in ['WS_eff', 'TI_eff', 'CT', 'Power']:
+        assert sim_res[k].values.tobytes() == ref[k].values.tobytes()
+
+
+def test_accumulating_superposition_numpy32(monkeypatch):
+    site = Hornsrev1Site()
+    x, y = site.initial_position.T
+    with Numpy32():
+        sim_res, ref, calls = _accumulating_and_stock(PropagateDownwind(site, V80(), NOJDeficit()), monkeypatch,
+                                                      x, y, wd=np.arange(0, 360, 30), ws=[6, 8, 10])
+    assert calls == 0
+    assert sim_res.WS_eff.values.tobytes() == ref.WS_eff.values.tobytes()
+
+
+@pytest.mark.parametrize('wake_deficitModel,turbulenceModel', [
+    (NiayifarGaussianDeficit(), GCLTurbulence(LinearSum(), rotorAvgModel=None)),
+    (NiayifarGaussianDeficit(), GCLTurbulence(SqrMaxSum(), rotorAvgModel=None)),
+    (BastankhahGaussianDeficit(), CrespoHernandez())])
+@pytest.mark.filterwarnings('ignore:Output seems independent of input')
+def test_accumulating_superposition_gradients(wake_deficitModel, turbulenceModel):
+    site = Hornsrev1Site()
+    x, y = site.initial_position[:9].T
+    wfm = PropagateDownwind(site, V80(), wake_deficitModel, turbulenceModel=turbulenceModel)
+    dAEP_fd, dAEP_cs, dAEP_autograd = [wfm.aep_gradients(method, ['TI'], x=x, y=y, wd=270, ws=[8, 10], TI=.08)
+                                       for method in [fd, cs, autograd]]
+    npt.assert_array_almost_equal(dAEP_autograd, dAEP_cs, 10)
+    npt.assert_allclose(dAEP_cs, dAEP_fd, rtol=1e-4)
+
+
+def test_accumulating_superposition_subclass():
+    class MaxLinearSum(LinearSum):
+        def __call__(self, value_jxxx):
+            return np.max(value_jxxx, 0)
+
+    kwargs = dict(site=UniformSite(), windTurbines=V80(), wake_deficitModel=BastankhahGaussianDeficit())
+    sim_res = PropagateDownwind(superpositionModel=MaxLinearSum(), **kwargs)(wt9_x, wt9_y)
+    ref = PropagateDownwind(superpositionModel=MaxSum(), **kwargs)(wt9_x, wt9_y)
+    npt.assert_array_equal(sim_res.WS_eff, ref.WS_eff)
+
+
+def test_accumulating_squaredSum_speedups():
+    class SpeedupDeficit(NOJDeficit):
+        def calc_deficit(self, ct_ilk, **kwargs):
+            return -NOJDeficit.calc_deficit(self, ct_ilk=ct_ilk, **kwargs)
+
+    wfm = PropagateDownwind(UniformSite(), V80(), SpeedupDeficit(), superpositionModel=SquaredSum())
+    with pytest.raises(AssertionError, match='SquaredSum only works for deficit - not speedups'):
+        wfm([0, 200, 400], [0, 0, 0], wd=[270, 280])
