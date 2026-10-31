@@ -3,6 +3,7 @@ import multiprocessing
 import warnings
 from abc import abstractmethod
 
+import numpy
 from numpy import newaxis as na
 from tqdm import tqdm
 
@@ -510,6 +511,25 @@ class EngineeringWindFarmModel(WindFarmModel):
                 raise ValueError(f"WindFarmModel an got unexpected keyword argument: '{n}'")
 
 
+def _accumulates(values):
+    # values computed later inherit a complex dtype from any of these, and the in-place sums need float64
+    return np.backend is numpy and all(v.dtype == numpy.float64 for v in values)
+
+
+def _move_to_accumulator(superpositionModel, value_nk, n_wt):
+    shape = value_nk[0].shape[1:]
+    # np.sum(value_jlk, 0) is pairwise, not sequential, when each row holds one value
+    if type(superpositionModel) in (LinearSum, SquaredSum) and numpy.prod(shape) > 1:
+        sum_jlk = superpositionModel.accumulator((n_wt,) + shape)
+        _accumulate(superpositionModel, sum_jlk, value_nk.pop(), 0)
+        return sum_jlk
+    return None
+
+
+def _accumulate(superpositionModel, sum_jlk, value_jlk, j):
+    superpositionModel.accumulate(sum_jlk[j + 1:], value_jlk[:len(sum_jlk) - j - 1])
+
+
 class PropagateUpDownIterative(EngineeringWindFarmModel):
     """Downstream wake deficits calculated and propagated in downstream direction.
     """
@@ -628,6 +648,7 @@ class PropagateUpDownIterative(EngineeringWindFarmModel):
         """
 
         deficit_nk = []
+        deficit_sum_jlk = None
         deficit_centre_nk = []
         blockage_nk = []
         uc_nk = []
@@ -635,6 +656,7 @@ class PropagateUpDownIterative(EngineeringWindFarmModel):
         cw_nk = []
         hcw_nk = []
         dh_nk = []
+        add_turb_nk = []
 
         def ilk2mk(v_ilk):
             dtype = (float, np.complex128)[np.iscomplexobj(v_ilk)]
@@ -650,9 +672,6 @@ class PropagateUpDownIterative(EngineeringWindFarmModel):
         WS_free_mk = []
         D_mk = []
         ct_jlk = []
-
-        if self.turbulenceModel:
-            add_turb_nk = []
 
         i_wd_l = np.arange(L).astype(int)
         is_w_or_c_sum = isinstance(self.superpositionModel, (WeightedSum, CumulativeWakeSum))
@@ -682,24 +701,26 @@ class PropagateUpDownIterative(EngineeringWindFarmModel):
                     """
                     return np.array([d_nk2[i] for d_nk2, i in zip(value_nk, range(j)[::-1])])
 
-                sp_kwargs = {'deficit_jxxx': get_value2WT(deficit_nk)}
-                if is_w_or_c_sum:
-                    sp_kwargs.update({k: get_value2WT(v_nk) for k, v_nk in [('sigma_sqr_jxxx', sigma_sqr_nk),
-                                                                            ('cw_jxxx', cw_nk),
-                                                                            ('hcw_jxxx', hcw_nk),
-                                                                            ('dh_jxxx', dh_nk)]})
-
-                    if isinstance(self.superpositionModel, WeightedSum):
-                        sp_kwargs.update({'WS_xxx': WS_mk[m],
-                                          'convection_velocity_jxxx': get_value2WT(uc_nk),
-                                          'deficit_centre_jxxx': get_value2WT(deficit_centre_nk)})
-                    else:
-                        sp_kwargs.update({'WS0_xxx': np.array(WS_free_mk),
-                                          'WS_eff_xxx': np.array(WS_eff_mk),
-                                          'ct_xxx': np.array(ct_jlk),
-                                          'D_xx': np.array(D_mk)})
                 WS_eff_lk = WS_mk[m]
-                if self.direction == 'down':
+                if deficit_sum_jlk is not None:
+                    WS_eff_lk = WS_eff_lk - self.superpositionModel.accumulated(deficit_sum_jlk[j])
+                elif self.direction == 'down':
+                    sp_kwargs = {'deficit_jxxx': get_value2WT(deficit_nk)}
+                    if is_w_or_c_sum:
+                        sp_kwargs.update({k: get_value2WT(v_nk) for k, v_nk in [('sigma_sqr_jxxx', sigma_sqr_nk),
+                                                                                ('cw_jxxx', cw_nk),
+                                                                                ('hcw_jxxx', hcw_nk),
+                                                                                ('dh_jxxx', dh_nk)]})
+
+                        if isinstance(self.superpositionModel, WeightedSum):
+                            sp_kwargs.update({'WS_xxx': WS_mk[m],
+                                              'convection_velocity_jxxx': get_value2WT(uc_nk),
+                                              'deficit_centre_jxxx': get_value2WT(deficit_centre_nk)})
+                        else:
+                            sp_kwargs.update({'WS0_xxx': np.array(WS_free_mk),
+                                              'WS_eff_xxx': np.array(WS_eff_mk),
+                                              'ct_xxx': np.array(ct_jlk),
+                                              'D_xx': np.array(D_mk)})
                     WS_eff_lk = WS_eff_lk - self.superpositionModel.superpose_deficit(**sp_kwargs)
                 if self.blockage_deficitModel:
                     WS_eff_lk = WS_eff_lk - self.blockage_deficitModel.superpositionModel(get_value2WT(blockage_nk))
@@ -832,11 +853,17 @@ class PropagateUpDownIterative(EngineeringWindFarmModel):
 
                     if self.blockage_deficitModel:
                         blockage_nk.append(blockage[0])
-                deficit_nk.append(deficit[0])
+                if deficit_sum_jlk is None:
+                    deficit_nk.append(deficit[0])
+                else:
+                    _accumulate(self.superpositionModel, deficit_sum_jlk, deficit[0], j)
 
                 # Calculate added turbulence intensity.
                 if self.turbulenceModel:
                     add_turb_nk.append(self.turbulenceModel(**model_kwargs)[0])
+
+                if j == 0 and self.direction == 'down' and _accumulates(deficit_nk + blockage_nk + add_turb_nk):
+                    deficit_sum_jlk = _move_to_accumulator(self.superpositionModel, deficit_nk, I)
 
         WS_eff_jlk, ct_jlk = np.array(WS_eff_mk), np.array(ct_jlk)
 
