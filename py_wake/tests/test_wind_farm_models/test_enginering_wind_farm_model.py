@@ -5,6 +5,7 @@ from numpy import newaxis as na
 import pytest
 
 import matplotlib.pyplot as plt
+import numpy
 import pandas as pd
 from py_wake import NOJ, examples
 from py_wake import np
@@ -29,6 +30,7 @@ from py_wake.turbulence_models.stf import STF2005TurbulenceModel, STF2017Turbule
 from py_wake.utils.gradients import autograd, cs, fd, plot_gradients
 from py_wake.utils.model_utils import get_models
 from py_wake.utils.profiling import profileit
+from py_wake.wind_farm_models import engineering_models
 from py_wake.wind_farm_models.engineering_models import All2AllIterative, PropagateDownwind, EngineeringWindFarmModel, PropagateUpDownIterative
 from py_wake.wind_farm_models.wind_farm_model import WindFarmModel
 from py_wake.wind_turbines import WindTurbines
@@ -645,3 +647,76 @@ def test_PropagateUpDownIterative_SquaredSum():
                                    superpositionModel=SquaredSum())
     with pytest.raises(AssertionError, match='PropagateDownwind does not work with SquaredSum when the blockage model has both up and downstream effects'):
         wfm([0, 200, 400], [0, 0, 0], wd=270)
+
+
+def _stock_add_blockage(self, deficit, dw_ijlk, **kwargs):
+    rotor_pos = -1e-10
+    if self.blockage_deficitModel is None:
+        deficit *= (dw_ijlk > rotor_pos)
+        blockage = None
+    elif (self.blockage_deficitModel != self.wake_deficitModel):
+        blockage = self.blockage_deficitModel.calc_blockage_deficit(
+            dw_ijlk=dw_ijlk, WS_ref_ilk=kwargs[self.blockage_deficitModel.WS_key], **kwargs)
+        deficit *= (dw_ijlk > rotor_pos)
+    else:
+        blockage = np.zeros_like(deficit)
+    return deficit, blockage
+
+
+class _CountingMask(numpy.ndarray):
+    multiplications = 0
+
+    def __array_ufunc__(self, ufunc, method, *inputs, **kwargs):
+        _CountingMask.multiplications += ufunc is numpy.multiply
+        inputs = [x.view(numpy.ndarray) if isinstance(x, _CountingMask) else x for x in inputs]
+        return getattr(ufunc, method)(*inputs, **kwargs)
+
+
+@pytest.mark.parametrize('dtype', [numpy.float64, numpy.float32, numpy.complex128])
+@pytest.mark.parametrize('upstream', [False, True])
+def test_downstream_only(dtype, upstream):
+    rng = numpy.random.default_rng(0)
+    values = numpy.array([0., -0., numpy.inf, -numpy.inf, numpy.nan, -numpy.nan, 1e-310, 1e-40, -3.5, 2.])
+    deficit = rng.choice(values, (1, 7, 5, 3)).astype(dtype)
+    if dtype == numpy.complex128:
+        deficit += 1j * rng.choice(values, deficit.shape)
+    dw_ijlk = rng.uniform(0, 100, (1, 7, 5, 1))
+    if upstream:
+        dw_ijlk[0, 3, 2] = -1e-9
+    ref = deficit.copy()
+    ref *= (dw_ijlk > -1e-10)
+    _CountingMask.multiplications = 0
+    res = engineering_models._downstream_only(deficit, (dw_ijlk > -1e-10).view(_CountingMask))
+    assert res is deficit
+    assert res.tobytes() == ref.tobytes()
+    assert _CountingMask.multiplications == (upstream or dtype == numpy.complex128)
+
+
+def test_downstream_only_matrix():
+    deficit = numpy.matrix([[1., 2.], [3., 4.]])
+    ref = deficit.copy()
+    ref *= numpy.ones((2, 2), bool)
+    npt.assert_array_equal(engineering_models._downstream_only(deficit, numpy.ones((2, 2), bool)), ref)
+
+
+def test_downstream_only_errors():
+    with pytest.raises(ValueError, match='read-only'):
+        engineering_models._downstream_only(numpy.broadcast_to(numpy.ones(3), (2, 3)), numpy.ones((2, 3), bool))
+    for shape in [(2, 3), (2,)]:
+        with pytest.raises(ValueError):
+            engineering_models._downstream_only(numpy.ones((1, 3)), numpy.ones(shape, bool))
+
+
+@pytest.mark.parametrize('wfm_cls,blockage', [(PropagateDownwind, False), (All2AllIterative, False),
+                                              (All2AllIterative, True), (PropagateUpDownIterative, True)])
+def test_add_blockage_downstream_only(wfm_cls, blockage, monkeypatch):
+    kwargs = {'blockage_deficitModel': SelfSimilarityDeficit(use_effective_ws=True)} if blockage else {}
+    site = Hornsrev1Site()
+    x, y = site.initial_position[:16].T
+    wfm = wfm_cls(site, V80(), BastankhahGaussianDeficit(use_effective_ws=True), superpositionModel=LinearSum(),
+                  **kwargs)
+    sim_res = wfm(x, y, wd=np.arange(0, 360, 30), ws=[6, 8])
+    monkeypatch.setattr(EngineeringWindFarmModel, '_add_blockage', _stock_add_blockage)
+    ref = wfm(x, y, wd=np.arange(0, 360, 30), ws=[6, 8])
+    for k in ['WS_eff', 'TI_eff', 'CT', 'Power']:
+        assert sim_res[k].values.tobytes() == ref[k].values.tobytes()

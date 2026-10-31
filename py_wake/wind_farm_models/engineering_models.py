@@ -177,12 +177,12 @@ class EngineeringWindFarmModel(WindFarmModel):
         # numerical inaccuracy in the trigonometric functions that calculates dw_ijlk
         rotor_pos = -1e-10
         if self.blockage_deficitModel is None:
-            deficit *= (dw_ijlk > rotor_pos)
+            deficit = _downstream_only(deficit, dw_ijlk > rotor_pos)
             blockage = None
         elif (self.blockage_deficitModel != self.wake_deficitModel):
             blockage = self.blockage_deficitModel.calc_blockage_deficit(
                 dw_ijlk=dw_ijlk, WS_ref_ilk=kwargs[self.blockage_deficitModel.WS_key], **kwargs)
-            deficit *= (dw_ijlk > rotor_pos)
+            deficit = _downstream_only(deficit, dw_ijlk > rotor_pos)
         else:
             # Same model for both wake and blockage
             # keep blockage in deficit and set blockage to zero
@@ -510,6 +510,16 @@ class EngineeringWindFarmModel(WindFarmModel):
                     n not in {'x', 'y', 'h', 'wd', 'ws', 'time', 'type', 'D', 'WD', 'WS',
                               'WS_eff', 'TI', 'TI_eff', 'I', 'L', 'K'}):
                 raise ValueError(f"WindFarmModel an got unexpected keyword argument: '{n}'")
+
+
+def _downstream_only(deficit, downstream):
+    # multiplying by True leaves a real float unchanged, but not a complex one (inf, signed zeros)
+    if (type(deficit) is numpy.ndarray and deficit.dtype.kind == 'f' and deficit.flags.writeable
+            and numpy.all(downstream)
+            and numpy.broadcast_shapes(deficit.shape, numpy.shape(downstream)) == deficit.shape):
+        return deficit
+    deficit *= downstream
+    return deficit
 
 
 def _accumulates(values):
