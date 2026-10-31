@@ -1,3 +1,6 @@
+import functools
+import numba
+import numpy
 import os
 from py_wake.rotor_avg_models.rotor_avg_model import RotorAvgModel
 from py_wake import np
@@ -5,9 +8,47 @@ from numpy import newaxis as na
 import xarray as xr
 from tqdm import tqdm
 from py_wake.utils.gradients import trapz
-from py_wake.utils.grid_interpolator import GridInterpolator
+from py_wake.utils.grid_interpolator import GridInterpolator, _grid_position
 from scipy.interpolate import RectBivariateSpline
 from py_wake.utils import gradients
+
+
+@numba.njit(error_model='numpy', inline='always')
+def _axis_corners(value, axes, start, x0, dx, n, stride):
+    position = _grid_position(value, axes, start, x0, dx, n, False, True)
+    lower = 0 if numpy.isnan(position) else int(position)
+    weight = position - lower
+    return 1 - weight, weight, lower * stride, min(lower + 1, n - 1) * stride
+
+
+def _overlap_factor_loop(D_jl, cw_ijlk, sigma_jlk, V, strides, axes, x0, dx, n, overlap_ijlk):
+    I, J, L, K = overlap_ijlk.shape
+    for j in range(J):
+        D_l, cw_ilk, sigma_lk, overlap_ilk = D_jl[j], cw_ijlk[:, j], sigma_jlk[j], overlap_ijlk[:, j]
+        for l in range(L):
+            radius = D_l[l] / 2
+            for k in range(K):
+                sigma = sigma_lk[l, k]
+                r0, r1, r_index0, r_index1 = _axis_corners(radius / sigma, axes, 0, x0[0], dx[0], n[0], strides[0])
+                for i in range(I):
+                    c0, c1, c_index0, c_index1 = _axis_corners(abs(cw_ilk[i, l, k] / sigma), axes, n[0], x0[1], dx[1],
+                                                               n[1], strides[1])
+                    overlap = 0. + r0 * c0 * V[r_index0 + c_index0] + r0 * c1 * V[r_index0 + c_index1] + \
+                        r1 * c0 * V[r_index1 + c_index0] + r1 * c1 * V[r_index1 + c_index1]
+                    if overlap != overlap:
+                        return True
+                    overlap_ilk[i, l, k] = overlap
+    return False
+
+
+@functools.lru_cache
+def _overlap_factor_kernel():
+    def readonly(ndim, layout='A'):
+        return numba.types.Array(numba.float64, ndim, layout, readonly=True)
+    ints, floats = numba.types.UniTuple(numba.int64, 2), numba.types.UniTuple(numba.float64, 2)
+    signature = numba.boolean(readonly(2), readonly(4), readonly(3), readonly(1, 'C'), ints, readonly(1, 'C'), floats,
+                              floats, ints, numba.float64[:, :, :, ::1])
+    return numba.njit(signature, error_model='numpy')(_overlap_factor_loop)
 
 
 class GaussianOverlapAvgModel(RotorAvgModel):
@@ -41,12 +82,32 @@ class GaussianOverlapAvgModel(RotorAvgModel):
             res_ijlk = deficit_model._calc_deficit_centre(sigma_ijlk, cw_ijlk=cw_ijlk, D_dst_ijl=D_dst_ijl, **kwargs)
         else:
             res_ijlk = func(cw_ijlk=cw_ijlk * 0, D_dst_ijl=D_dst_ijl, **kwargs)
-        r_sigma_ijlk = (D_dst_ijl / 2)[..., na] / sigma_ijlk
-        cw_sigma_ijlk = gradients.cabs(cw_ijlk / sigma_ijlk)
-        shape = np.broadcast_shapes(r_sigma_ijlk.shape, cw_sigma_ijlk.shape)
-        xp = np.stack([np.broadcast_to(r_sigma_ijlk, shape), np.broadcast_to(cw_sigma_ijlk, shape)]).reshape(2, -1).T
-        overlap_factor_ijlk = self.overlap_interpolator(xp).reshape(shape)
+        overlap_factor_ijlk = self._compiled_overlap_factor(D_dst_ijl, cw_ijlk, sigma_ijlk)
+        if overlap_factor_ijlk is None:
+            r_sigma_ijlk = (D_dst_ijl / 2)[..., na] / sigma_ijlk
+            cw_sigma_ijlk = gradients.cabs(cw_ijlk / sigma_ijlk)
+            shape = np.broadcast_shapes(r_sigma_ijlk.shape, cw_sigma_ijlk.shape)
+            xp = np.stack([np.broadcast_to(r_sigma_ijlk, shape), np.broadcast_to(cw_sigma_ijlk, shape)]).reshape(2, -1).T
+            overlap_factor_ijlk = self.overlap_interpolator(xp).reshape(shape)
         return res_ijlk * overlap_factor_ijlk
+
+    def _compiled_overlap_factor(self, D_dst_ijl, cw_ijlk, sigma_ijlk):
+        layout = self.overlap_interpolator._linear_limit_layout()
+        arrays = D_dst_ijl, cw_ijlk, sigma_ijlk
+        if np.backend is not numpy or layout is None or \
+                any(type(x) is not numpy.ndarray or x.dtype != numpy.float64 for x in arrays) or \
+                [x.ndim for x in arrays] != [3, 4, 4] or len(D_dst_ijl) != 1 or len(sigma_ijlk) != 1:
+            return None
+        shape = numpy.broadcast_shapes(D_dst_ijl.shape + (1,), cw_ijlk.shape, sigma_ijlk.shape)
+        if shape[0] == shape[3] == 1:
+            return None
+        D_jl, sigma_jlk = numpy.broadcast_to(D_dst_ijl[0], shape[1:3]), numpy.broadcast_to(sigma_ijlk[0], shape[1:])
+        cw_ijlk, overlap_ijlk = numpy.broadcast_to(cw_ijlk, shape), numpy.empty(shape)
+        # NaN sign bits depend on operand order, which LLVM may commute
+        if _overlap_factor_kernel()(D_jl, cw_ijlk, sigma_jlk, layout.V, layout.strides, layout.axes, layout.x0,
+                                    layout.dx, layout.n, overlap_ijlk):
+            return None
+        return overlap_ijlk
 
 
 def make_lookup_table(n_theta, n_r, dr=.5, dcw=.5):  # pragma: no cover
