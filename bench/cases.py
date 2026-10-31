@@ -10,6 +10,7 @@ from py_wake.deficit_models.noj import NOJLocalDeficit
 from py_wake.deficit_models.utils import ct2a_mom1d
 from py_wake.examples.data.hornsrev1 import Hornsrev1Site, HornsrevV80, wt_x, wt_y
 from py_wake.ground_models.ground_models import Mirror
+from py_wake.literature.gaussian_models import Niayifar_PorteAgel_2016
 from py_wake.literature.turbopark import Nygaard_2022
 from py_wake.rotor_avg_models.area_overlap_model import AreaOverlapAvgModel
 from py_wake.rotor_avg_models.gaussian_overlap_model import GaussianOverlapAvgModel
@@ -58,6 +59,7 @@ MODELS = {
     "turbopark": Nygaard_2022,
     "noj": NOJ,
     "bastankhah": IEA37SimpleBastankhahGaussian,
+    "niayifar": Niayifar_PorteAgel_2016,
     "fuga": fuga_2mw,
 }
 assert tuple(MODELS) == MODEL_NAMES
