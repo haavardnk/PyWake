@@ -2,6 +2,7 @@ import pytest
 from py_wake import np
 from py_wake import NOJ
 from py_wake.site._site import UniformSite
+from py_wake import superposition_models
 from py_wake.superposition_models import LinearSum, SquaredSum, MaxSum, SqrMaxSum, WeightedSum, CumulativeWakeSum, \
     SuperpositionModel
 from py_wake.tests import npt
@@ -15,6 +16,7 @@ from py_wake.tests.test_deficit_models.test_noj import NibeA0
 from py_wake.examples.data.hornsrev1 import Hornsrev1Site, V80, wt9_x, wt9_y
 from py_wake.deficit_models.deficit_model import BlockageDeficitModel, WakeDeficitModel
 from py_wake.deficit_models import NoWakeDeficit
+from py_wake.ground_models import Mirror
 from py_wake.examples.data.iea37._iea37 import IEA37Site, IEA37_WindTurbines
 from py_wake.deficit_models.gaussian import BastankhahGaussianDeficit, NiayifarGaussianDeficit
 from py_wake.deficit_models.utils import ct2a_mom1d
@@ -298,3 +300,104 @@ def test_accumulating_squaredSum_speedups():
     wfm = PropagateDownwind(UniformSite(), V80(), SpeedupDeficit(), superpositionModel=SquaredSum())
     with pytest.raises(AssertionError, match='SquaredSum only works for deficit - not speedups'):
         wfm([0, 200, 400], [0, 0, 0], wd=[270, 280])
+
+
+def _spy_kernel(monkeypatch):
+    kernel, calls = superposition_models._add_squares_kernel, []
+
+    def spy(sum_n, value_jn):
+        calls.append((len(value_jn), kernel(sum_n, value_jn)))
+        return calls[-1][1]
+    monkeypatch.setattr(superposition_models, '_add_squares_kernel', spy)
+    return calls
+
+
+squared_sum_values = np.array([[np.nan, np.inf, 0., -0., 1e300, 1e-300], [1., .1, -0., 3e-200, 1e200, 4.]])
+
+
+@pytest.mark.parametrize('value,kernel', [
+    pytest.param(squared_sum_values, True, id='2d'),
+    pytest.param(squared_sum_values.reshape(3, 1, 2, 2), True, id='4d'),
+    pytest.param(np.zeros((0, 5)), True, id='empty'),
+    pytest.param(squared_sum_values.T, False, id='j_innermost'),
+    pytest.param(np.array([[1.] + [2.**-27] * 16] * 2).T, False, id='j_innermost_pairwise'),
+    pytest.param(squared_sum_values[:, ::2], False, id='strided'),
+    pytest.param(squared_sum_values.reshape(12, 1), False, id='one_per_row'),
+    pytest.param(squared_sum_values.ravel(), False, id='1d'),
+    pytest.param(squared_sum_values[:, :4].astype(np.float32), False, id='float32'),
+    pytest.param(squared_sum_values[:, 2:] + .5j, False, id='complex')])
+@pytest.mark.filterwarnings('ignore:overflow encountered')
+def test_squaredSum_kernel(value, kernel, monkeypatch):
+    calls = _spy_kernel(monkeypatch)
+    res = SquaredSum()(value)
+    ref = np.sqrt(np.sum(np.power(value, 2), 0))
+    assert len(calls) == kernel
+    assert res.dtype == ref.dtype
+    assert res.tobytes() == ref.tobytes()
+
+
+@pytest.mark.parametrize('sum_xxx,value,kernel', [
+    pytest.param(np.full((2, 6), .3), squared_sum_values, True, id='same_shape'),
+    pytest.param(np.full((6, 2), .3).T, squared_sum_values, False, id='f_order_sum'),
+    pytest.param(np.full((2, 6), .3), squared_sum_values.T.copy().T, False, id='f_order_value'),
+    pytest.param(np.full((2, 6), .3), squared_sum_values[0], False, id='broadcast'),
+    pytest.param(np.full((2, 4), .3), squared_sum_values[:, :4].astype(np.float32), False, id='float32_value'),
+    pytest.param(np.full((2, 4), .3, dtype=np.float32), squared_sum_values[:, :4], False, id='float32_sum'),
+    pytest.param(np.full((2, 4), .3 + 0j), squared_sum_values[:, 2:] + .5j, False, id='complex')])
+@pytest.mark.filterwarnings('ignore:overflow encountered')
+def test_squaredSum_accumulate_kernel(sum_xxx, value, kernel, monkeypatch):
+    calls = _spy_kernel(monkeypatch)
+    sum_xxx, ref = sum_xxx.copy(order='K'), sum_xxx.copy()
+    ref += np.power(value, 2)
+    SquaredSum().accumulate(sum_xxx, value)
+    assert len(calls) == kernel
+    assert sum_xxx.tobytes() == ref.tobytes()
+
+
+def test_squaredSum_accumulate_overlap(monkeypatch):
+    calls = _spy_kernel(monkeypatch)
+    sum_xxx = np.arange(1., 6.)
+    SquaredSum().accumulate(sum_xxx[1:], sum_xxx[:-1])
+    assert calls == []
+    assert sum_xxx.tolist() == [1, 3, 7, 13, 21]
+
+
+def test_squaredSum_accumulate_int(monkeypatch):
+    calls = _spy_kernel(monkeypatch)
+    with pytest.raises(TypeError):
+        SquaredSum().accumulate(np.zeros(2, dtype=int), np.ones(2))
+    assert calls == []
+
+
+def test_squaredSum_kernel_numpy32():
+    value = np.array([[.1, .2], [.3, .4]])
+    sum_xxx = np.zeros(2)
+    with Numpy32():
+        res = SquaredSum()(value)
+        SquaredSum().accumulate(sum_xxx, value[0])
+    assert res.dtype == np.float32
+    assert sum_xxx.tobytes() == np.power(value[0].astype(np.float32), 2).astype(np.float64).tobytes()
+
+
+def test_squaredSum_kernel_speedups(monkeypatch):
+    calls = _spy_kernel(monkeypatch)
+    with pytest.raises(AssertionError, match='SquaredSum only works for deficit - not speedups'):
+        SquaredSum()(np.array([[1., 2.], [3., -1e-300]]))
+    with pytest.raises(AssertionError, match='SquaredSum only works for deficit - not speedups'):
+        SquaredSum().accumulate(np.zeros(2), np.array([-0., -1.]))
+    assert calls == [(2, True), (1, True)]
+
+
+@pytest.mark.parametrize('wfm_cls', [PropagateDownwind, All2AllIterative])
+def test_squaredSum_kernel_wfm(wfm_cls, monkeypatch):
+    site = Hornsrev1Site()
+    x, y = site.initial_position.T
+    wfm = wfm_cls(site, V80(), BastankhahGaussianDeficit(groundModel=Mirror()), superpositionModel=SquaredSum(),
+                  turbulenceModel=STF2017TurbulenceModel(addedTurbulenceSuperpositionModel=SquaredSum()))
+    calls = _spy_kernel(monkeypatch)
+    sim_res = wfm(x, y, wd=np.arange(0, 360, 30), ws=[6, 8])
+    assert {1, 2} <= {rows for rows, _ in calls}
+    monkeypatch.setattr(superposition_models, '_is_c_float64_array', lambda x: False)
+    ref = wfm(x, y, wd=np.arange(0, 360, 30), ws=[6, 8])
+    for k in ['WS_eff', 'TI_eff', 'CT', 'Power']:
+        assert sim_res[k].values.tobytes() == ref[k].values.tobytes()

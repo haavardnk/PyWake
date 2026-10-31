@@ -1,5 +1,7 @@
 from py_wake import np
 from abc import ABC, abstractmethod
+import numba
+import numpy
 from numpy import newaxis as na
 from py_wake.utils.gradients import cabs
 
@@ -53,8 +55,33 @@ class AddedTurbulenceSuperpositionModel():
         return TI_xxx + self.accumulated(sum_xxx)
 
 
+@numba.njit(error_model='numpy')
+def _add_squares_kernel(sum_n, value_jn):
+    negative = False
+    for j in range(value_jn.shape[0]):
+        for n in range(value_jn.shape[1]):
+            value = value_jn[j, n]
+            negative |= value < 0
+            sum_n[n] = sum_n[n] + value * value
+    return negative
+
+
+def _is_c_float64_array(x):
+    return type(x) is numpy.ndarray and x.dtype == numpy.float64 and x.flags.c_contiguous
+
+
+def _add_squares(sum_xxx, value_jxxx):
+    negative = _add_squares_kernel(sum_xxx.reshape(-1), value_jxxx.reshape(len(value_jxxx), sum_xxx.size))
+    assert not negative, "SquaredSum only works for deficit - not speedups"
+
+
 class SquaredSum(SuperpositionModel, AddedTurbulenceSuperpositionModel):
     def __call__(self, value_jxxx):
+        # np.sum(value_jxxx, 0) is sequential only when j is outermost in memory and each row holds several values
+        if np.backend is numpy and _is_c_float64_array(value_jxxx) and numpy.prod(value_jxxx.shape[1:]) > 1:
+            sum_xxx = numpy.zeros(value_jxxx.shape[1:])
+            _add_squares(sum_xxx, value_jxxx)
+            return numpy.sqrt(sum_xxx, out=sum_xxx)
         assert not np.any(value_jxxx < 0), "SquaredSum only works for deficit - not speedups"
         return np.sqrt(np.sum(np.power(value_jxxx, 2), 0))
 
@@ -62,6 +89,10 @@ class SquaredSum(SuperpositionModel, AddedTurbulenceSuperpositionModel):
         return np.zeros(shape)
 
     def accumulate(self, sum_xxx, value_xxx):
+        if np.backend is numpy and _is_c_float64_array(sum_xxx) and _is_c_float64_array(value_xxx) and \
+                value_xxx.shape == sum_xxx.shape and not numpy.may_share_memory(sum_xxx, value_xxx):
+            _add_squares(sum_xxx, value_xxx[na])
+            return
         assert not np.any(value_xxx < 0), "SquaredSum only works for deficit - not speedups"
         sum_xxx += np.power(value_xxx, 2)
 
