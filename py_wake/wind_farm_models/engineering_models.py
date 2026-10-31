@@ -655,6 +655,7 @@ class PropagateUpDownIterative(EngineeringWindFarmModel):
             add_turb_nk = []
 
         i_wd_l = np.arange(L).astype(int)
+        is_w_or_c_sum = isinstance(self.superpositionModel, (WeightedSum, CumulativeWakeSum))
 
         wt_kwargs = self.get_wt_kwargs(TI_eff_ilk, kwargs)
 
@@ -682,7 +683,7 @@ class PropagateUpDownIterative(EngineeringWindFarmModel):
                     return np.array([d_nk2[i] for d_nk2, i in zip(value_nk, range(j)[::-1])])
 
                 sp_kwargs = {'deficit_jxxx': get_value2WT(deficit_nk)}
-                if isinstance(self.superpositionModel, (WeightedSum, CumulativeWakeSum)):
+                if is_w_or_c_sum:
                     sp_kwargs.update({k: get_value2WT(v_nk) for k, v_nk in [('sigma_sqr_jxxx', sigma_sqr_nk),
                                                                             ('cw_jxxx', cw_nk),
                                                                             ('hcw_jxxx', hcw_nk),
@@ -785,13 +786,15 @@ class PropagateUpDownIterative(EngineeringWindFarmModel):
                 if 'z_ijlk' in self.args4all:
                     model_kwargs['z_ijlk'] = h_mk[m][na, na] + dh_ijlk
 
-                hcw_nk.append(hcw_ijlk[0])
-                dh_nk.append(dh_ijlk[0])
+                if is_w_or_c_sum:
+                    hcw_nk.append(hcw_ijlk[0])
+                    dh_nk.append(dh_ijlk[0])
 
                 if 'cw_ijlk' in self.args4all:
                     # sqrt(a**2+b**2) as hypot does not support complex numbers
                     model_kwargs['cw_ijlk'] = np.sqrt(dh_ijlk**2 + hcw_ijlk**2)
-                    cw_nk.append(model_kwargs['cw_ijlk'][0])
+                    if is_w_or_c_sum:
+                        cw_nk.append(model_kwargs['cw_ijlk'][0])
 
                 if 'wake_radius_ijl' in self.args4all:
                     model_kwargs['wake_radius_ijl'] = self.wake_deficitModel.wake_radius(**model_kwargs)[..., 0]
@@ -802,7 +805,7 @@ class PropagateUpDownIterative(EngineeringWindFarmModel):
                 # ======================================================================================================
                 # Calculate deficit
                 # ======================================================================================================
-                if isinstance(self.superpositionModel, (WeightedSum, CumulativeWakeSum)) and self.direction == 'down':
+                if is_w_or_c_sum and self.direction == 'down':
                     # only cw needs to be rotor averaged as remaining super position input is
                     # the same all over the rotor
                     if self.wake_deficitModel.rotorAvgModel:
