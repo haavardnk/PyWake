@@ -1,4 +1,4 @@
-MODEL_NAMES = ("ogtp", "park2", "fugamultilut", "turbopark", "noj", "bastankhah", "fuga")
+MODEL_NAMES = ("ogtp", "park2", "fugamultilut", "turbopark", "noj", "bastankhah", "niayifar", "fuga")
 SINGLE_TYPE_MODELS = {"fuga"}
 DEFAULT_FARMS = ("hr1", "grid400", "aligned100")
 

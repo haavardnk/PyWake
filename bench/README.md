@@ -25,7 +25,8 @@ python bench/profile_case.py --root . --case ogtp-grid400
   inflate its peak memory by an amount that depends on garbage-collector timing.
 - Cases are `<model>-<farm>`. Models: `ogtp` (TurboGaussian, Mirror, Gaussian overlap, SquaredSum,
   deficit scaled with the downstream ambient speed), `park2` (NOJLocal with area overlap,
-  LinearSum), `fugamultilut` (two LUTs), `turbopark`, `noj`, `bastankhah`, `fuga`. Farms: `hr1`
+  LinearSum), `fugamultilut` (two LUTs), `turbopark`, `noj`, `bastankhah`, `niayifar` (Gaussian with
+  CrespoHernandez added turbulence), `fuga`. Farms: `hr1`
   (Horns Rev 1, 360 wd x 23 ws), `grid400` (400 WTGs of two types, 72 wd x 22 ws), `aligned100`
   (100 WTGs on an exact grid, 24 wd including the grid axes, so turbines sit exactly side by side)
   and `grid1000` (1000 WTGs, 12 wd, not in the default matrix).
