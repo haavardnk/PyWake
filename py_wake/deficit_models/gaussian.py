@@ -1,3 +1,6 @@
+import functools
+import numba
+import numpy
 from numpy import newaxis as na
 from py_wake.utils.gradients import erf
 from py_wake import np
@@ -418,6 +421,60 @@ class ZongGaussian(PropagateDownwind, DeprecatedModel):
         DeprecatedModel.__init__(self, 'py_wake.literature.gaussian_models.Zong_PorteAgel_2020')
 
 
+def _turbo_expansion_terms(dw, D, alpha, beta, term2, term1, ratio):
+    I, J, L, K = term1.shape
+    for i in range(I):
+        for j in range(J):
+            for l in range(L):
+                for k in range(K):
+                    ijlk = i, j, l, k
+                    u = alpha[ijlk] + beta[ijlk] * dw[ijlk] / D[ijlk]
+                    term1[ijlk] = numpy.sqrt(u * u + 1)
+                    ratio[ijlk] = (term1[ijlk] + 1) * alpha[ijlk] / \
+                        ((term2[ijlk] + 1) * (alpha[ijlk] + beta[ijlk] * abs(dw[ijlk]) / D[ijlk]))
+
+
+def _turbo_sigma(fac, term2, log_ratio, epsilon_D, term1_sigma):
+    nan = False
+    I, J, L, K = term1_sigma.shape
+    for i in range(I):
+        for j in range(J):
+            for l in range(L):
+                for k in range(K):
+                    ijlk = i, j, l, k
+                    term1_sigma[ijlk] = fac[ijlk] * (term1_sigma[ijlk] - term2[ijlk] - log_ratio[ijlk]) + epsilon_D[ijlk]
+                    nan |= term1_sigma[ijlk] != term1_sigma[ijlk]
+    return nan
+
+
+@functools.lru_cache
+def _turbo_kernels():
+    inputs = numba.types.Array(numba.float64, 4, 'A', readonly=True)
+    outputs = numba.float64[:, :, :, ::1]
+    return (numba.njit(numba.void(inputs, inputs, inputs, inputs, inputs, outputs, outputs),
+                       error_model='numpy')(_turbo_expansion_terms),
+            numba.njit(numba.boolean(inputs, inputs, outputs, inputs, outputs), error_model='numpy')(_turbo_sigma))
+
+
+def _compiled_turbo_sigma(dw_ijlk, D_src_ijlk, alpha_ijlk, beta_ijlk, term2_ijlk, fac_ijlk, epsilon_D_ijlk):
+    inputs = dw_ijlk, D_src_ijlk, alpha_ijlk, beta_ijlk, term2_ijlk, fac_ijlk, epsilon_D_ijlk
+    if not all(type(x) is numpy.ndarray and x.dtype == numpy.float64 for x in inputs):
+        return None
+    shape = numpy.broadcast_shapes(*[x.shape for x in inputs])
+    if len(shape) != 4:
+        return None
+    dw_ijlk, D_src_ijlk, alpha_ijlk, beta_ijlk, term2_ijlk, fac_ijlk, epsilon_D_ijlk = \
+        [numpy.broadcast_to(x, shape) for x in inputs]
+    expansion_kernel, sigma_kernel = _turbo_kernels()
+    term1_sigma_ijlk, log_ratio_ijlk = numpy.empty(shape), numpy.empty(shape)
+    expansion_kernel(dw_ijlk, D_src_ijlk, alpha_ijlk, beta_ijlk, term2_ijlk, term1_sigma_ijlk, log_ratio_ijlk)
+    numpy.log(log_ratio_ijlk, out=log_ratio_ijlk)
+    # NaN sign bits depend on operand order, which LLVM may commute
+    if sigma_kernel(fac_ijlk, term2_ijlk, log_ratio_ijlk, epsilon_D_ijlk, term1_sigma_ijlk):
+        return None
+    return term1_sigma_ijlk
+
+
 class TurboGaussianDeficit(NiayifarGaussianDeficit):
     """Implemented similar to Ørsted's TurbOPark model (https://github.com/OrstedRD/TurbOPark/blob/main/TurbOPark%20description.pdf)"""
 
@@ -452,15 +509,20 @@ class TurboGaussianDeficit(NiayifarGaussianDeficit):
         beta_ilk = c2 * TI_ref_ilk / np.sqrt(ct_ilk)
 
         fac_ilk = self.A * TI_ref_ilk * D_src_il[..., na] / beta_ilk
-        term1_ijlk = np.sqrt((alpha_ilk[:, na] + beta_ilk[:, na] * dw_ijlk / D_src_il[:, na, :, na])**2 + 1)
         term2_ilk = np.sqrt(1 + alpha_ilk**2)
+        epsilon_D_ilk = self.epsilon_ilk(ct_ilk) * D_src_il[..., na]
+        sigma_ijlk = _compiled_turbo_sigma(dw_ijlk, D_src_il[:, na, :, na], alpha_ilk[:, na], beta_ilk[:, na],
+                                           term2_ilk[:, na], fac_ilk[:, na], epsilon_D_ilk[:, na])
+        if sigma_ijlk is not None:
+            return sigma_ijlk
+        term1_ijlk = np.sqrt((alpha_ilk[:, na] + beta_ilk[:, na] * dw_ijlk / D_src_il[:, na, :, na])**2 + 1)
         term3_ijlk = (term1_ijlk + 1) * alpha_ilk[:, na]
         term4_ijlk = (term2_ilk[:, na] + 1) * (alpha_ilk[:, na] +
                                                beta_ilk[:, na] * cabs(dw_ijlk) / D_src_il[:, na, :, na])
 
         expansion_ijlk = fac_ilk[:, na] * (term1_ijlk - term2_ilk[:, na] - np.log(term3_ijlk / term4_ijlk))
 
-        return expansion_ijlk + self.epsilon_ilk(ct_ilk)[:, na] * D_src_il[:, na, :, na]
+        return expansion_ijlk + epsilon_D_ilk[:, na]
 
 
 class BlondelSuperGaussianDeficit2020(WakeDeficitModel):
