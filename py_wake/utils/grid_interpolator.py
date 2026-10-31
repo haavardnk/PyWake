@@ -258,6 +258,12 @@ class GridInterpolator(object):
         interpolate(xp_T, layout.V, layout.strides, layout.axes, layout.axes_start, layout.x0, layout.dx, layout.n, res)
         return res
 
+    def _linear_limit_layout(self):
+        if self.bounds != 'limit' or not numpy.all(numpy.atleast_1d(self.method) == 'linear') or \
+                self.irregular_axes.any():
+            return None
+        return self._compiled_layout
+
     @functools.cached_property
     def _compiled_layout(self):
         V = self.V
