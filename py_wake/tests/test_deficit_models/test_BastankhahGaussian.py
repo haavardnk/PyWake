@@ -188,14 +188,14 @@ def _overlap_wfm(wfm_cls, deficit):
         deficitModel = NiayifarGaussianDeficit(ct2a=ct2a_mom1d, rotorAvgModel=GaussianOverlapAvgModel())
         return wfm_cls(Hornsrev1Site(), V80(), deficitModel, superpositionModel=LinearSum(),
                        turbulenceModel=CrespoHernandez(ct2a=ct2a_mom1d, c=[0.73, 0.8325, 0.0325, -0.32]))
-    deficitModel = TurboGaussianDeficit(ct2a=ct2a_mom1d, A=.055, ctlim=.96, groundModel=Mirror(),
+    deficitModel = TurboGaussianDeficit(ct2a=ct2a_mom1d, ctlim=.96, groundModel=Mirror(superpositionModel=SquaredSum()),
                                         rotorAvgModel=GaussianOverlapAvgModel())
     deficitModel.WS_key = 'WS_jlk'
     return wfm_cls(Hornsrev1Site(), V80(), deficitModel, superpositionModel=SquaredSum())
 
 
 @pytest.mark.parametrize('wfm_cls', [PropagateDownwind, All2AllIterative])
-@pytest.mark.parametrize('deficit', ['niayifar', 'ogtp'])
+@pytest.mark.parametrize('deficit', ['niayifar', 'turbopark'])
 def test_deficit_centre_kernel_wfm(wfm_cls, deficit, monkeypatch):
     wfm = _overlap_wfm(wfm_cls, deficit)
     x, y = wfm.site.initial_position.T
