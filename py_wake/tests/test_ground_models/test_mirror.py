@@ -23,7 +23,9 @@ from py_wake.tests.test_wind_farm_models.test_enginering_wind_farm_model import 
 from py_wake.deficit_models.gaussian import BastankhahGaussianDeficit, TurboGaussianDeficit
 from py_wake.rotor_avg_models import CGIRotorAvg
 from py_wake.rotor_avg_models.gaussian_overlap_model import GaussianOverlapAvgModel
-from py_wake.utils.gradients import autograd
+from numpy import newaxis as na
+from py_wake.ground_models import ground_models
+from py_wake.utils.gradients import autograd, cs, fd
 
 
 @pytest.mark.parametrize('wfm_cls', [PropagateDownwind,
@@ -333,3 +335,101 @@ def test_Mirror_shared_inputs_gradients(deficitModel):
         return wfm.aep_gradients(autograd, ['x', 'y', 'h'], x=x, y=y, h=h, wd=[260, 270, 280], ws=[6, 10])
 
     npt.assert_array_almost_equal(get_gradients(Mirror()), get_gradients(DuplicatingMirror()), 10)
+
+
+def _stock_mirror_call(self, func, h_ilk, dh_ijlk, IJLK, **kwargs):
+    new_kwargs = self._update_kwargs(h_ilk=h_ilk, dh_ijlk=dh_ijlk, IJLK=IJLK, **kwargs)
+    above_ground = ((new_kwargs['h_ilk'][:, na, :] + new_kwargs['dh_ijlk']) > 0)
+    values_pijlk = func(**new_kwargs)
+    deficit_mijlk = np.reshape(values_pijlk * above_ground, (2,) + IJLK)
+    superpositionModel = self.superpositionModel or getattr(func, '__self__', func).superpositionModel
+    return superpositionModel(deficit_mijlk)
+
+
+def _spy_above_ground_only(monkeypatch):
+    above_ground_only, calls = ground_models._above_ground_only, {'skip': 0, 'multiply': 0}
+
+    def spy(values_pijlk, above_ground_pijlk):
+        res = above_ground_only(values_pijlk, above_ground_pijlk)
+        calls['skip' if res is values_pijlk else 'multiply'] += 1
+        return res
+    monkeypatch.setattr(ground_models, '_above_ground_only', spy)
+    return calls
+
+
+class SubArray(np.ndarray):
+    pass
+
+
+mirror_rng = np.random.default_rng(3)
+mirror_values = np.r_[mirror_rng.uniform(0, 2, 24), -0., 0., np.inf, -np.inf, np.nan, -np.nan, 5e-324, 1e308]
+mirror_values = mirror_values.reshape(2, 4, 4, 1) * np.ones(3)
+mirror_above = np.ones((2, 4, 4, 1), dtype=bool)
+mirror_partly = mirror_above.copy()
+mirror_partly[1, 2, 0] = False
+
+
+@pytest.mark.parametrize('values,above_ground,skip', [
+    pytest.param(mirror_values, mirror_above, True, id='above'),
+    pytest.param(mirror_values, mirror_above[..., 0][..., na] * np.ones(3, dtype=bool), True, id='full_mask'),
+    pytest.param(mirror_values, np.ones((1, 1, 1, 1), dtype=bool), True, id='broadcast_mask'),
+    pytest.param(mirror_values[:, :0], mirror_above[:, :0], True, id='empty'),
+    pytest.param(mirror_values.astype(np.float32), mirror_above, True, id='float32'),
+    pytest.param(mirror_values, mirror_partly, False, id='partly_below'),
+    pytest.param(mirror_values, ~mirror_above, False, id='below'),
+    pytest.param(np.ascontiguousarray(mirror_values[..., :1]), mirror_above * np.ones(3, dtype=bool), False, id='mask_broadcasts_values'),
+    pytest.param(np.asfortranarray(mirror_values), mirror_above, False, id='fortran'),
+    pytest.param(mirror_values.astype('>f8'), mirror_above, False, id='big_endian'),
+    pytest.param(np.broadcast_to(mirror_values, mirror_values.shape), mirror_above, False, id='readonly'),
+    pytest.param(mirror_values[0], mirror_above, False, id='mask_more_dims'),
+    pytest.param(mirror_values[:, :, ::2], mirror_above[:, :, ::2], False, id='strided'),
+    pytest.param(mirror_values + 0j, mirror_above, False, id='complex'),
+    pytest.param(np.ones((2, 4, 4, 3), dtype=int), mirror_above, False, id='int'),
+    pytest.param(mirror_values.view(SubArray), mirror_above, False, id='subclass_values'),
+    pytest.param(mirror_values, mirror_above.view(SubArray), False, id='subclass_mask'),
+    pytest.param(mirror_values, mirror_above.astype(float), False, id='float_mask'),
+    pytest.param(mirror_values, mirror_above.astype(float) * 2, False, id='scaling_mask')])
+def test_above_ground_only(values, above_ground, skip):
+    res = ground_models._above_ground_only(values, above_ground)
+    ref = values * above_ground
+    assert (res is values) == skip
+    assert res.dtype == ref.dtype
+    assert res.shape == ref.shape
+    assert res.strides == ref.strides or res.size == 0
+    assert res.tobytes() == ref.tobytes()
+
+
+@pytest.mark.parametrize('wfm_cls', [PropagateDownwind, All2AllIterative])
+@pytest.mark.parametrize('deficitModel', mirror_deficit_models)
+def test_Mirror_above_ground_only(wfm_cls, deficitModel, monkeypatch):
+    site = UniformSite([1], ti=0.1)
+    x, y, h = [0, 400, 800, 200], [0, 50, -30, 300], [50, 70, 60, 80]
+    wfm = wfm_cls(site, V80(), deficitModel(Mirror()), turbulenceModel=STF2017TurbulenceModel())
+    grid = XZGrid(y=0, x=np.linspace(-100, 1000, 12), z=np.linspace(0, 150, 6))
+
+    def run():
+        sim_res = wfm(x, y, h=h, wd=[260, 270, 280], ws=[6, 10])
+        return sim_res, sim_res.flow_map(grid, wd=270, ws=10)
+    calls = _spy_above_ground_only(monkeypatch)
+    sim_res, flow_map = run()
+    assert calls['skip'] > 0 and calls['multiply'] > 0
+    monkeypatch.setattr(Mirror, '__call__', _stock_mirror_call)
+    ref, ref_flow_map = run()
+    for k in ['WS_eff', 'TI_eff', 'CT', 'Power']:
+        assert sim_res[k].values.tobytes() == ref[k].values.tobytes()
+    assert flow_map.WS_eff.values.tobytes() == ref_flow_map.WS_eff.values.tobytes()
+
+
+@pytest.mark.parametrize('gradient_method,skip', [(autograd, False), (cs, False), (fd, True)])
+def test_Mirror_above_ground_only_gradients(gradient_method, skip, monkeypatch):
+    site = UniformSite([1], ti=0.1)
+    x, y, h = np.array([0., 400, 800]), np.array([0., 50, -30]), np.array([50., 70, 60])
+    wfm = PropagateDownwind(site, V80(), mirror_deficit_models[3](Mirror()), turbulenceModel=STF2017TurbulenceModel())
+
+    def get_gradients():
+        return wfm.aep_gradients(gradient_method, ['x', 'y', 'h'], x=x, y=y, h=h, wd=[260, 270, 280], ws=[6, 10])
+    calls = _spy_above_ground_only(monkeypatch)
+    gradients = get_gradients()
+    assert (calls['skip'] > 0) == skip
+    monkeypatch.setattr(Mirror, '__call__', _stock_mirror_call)
+    npt.assert_array_equal(gradients, get_gradients())

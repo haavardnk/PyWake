@@ -1,7 +1,19 @@
+import numpy
 from py_wake import np
 from numpy import newaxis as na
 from py_wake.utils.model_utils import ModelMethodWrapper, Model
 from py_wake.superposition_models import LinearSum
+
+
+def _above_ground_only(values_pijlk, above_ground_pijlk):
+    # multiplying by True leaves a real float unchanged, but not a complex one (inf, signed zeros)
+    if type(values_pijlk) is numpy.ndarray and type(above_ground_pijlk) is numpy.ndarray and \
+            values_pijlk.dtype.kind == 'f' and values_pijlk.dtype.isnative and above_ground_pijlk.dtype == bool and \
+            values_pijlk.flags.c_contiguous and values_pijlk.flags.writeable and \
+            numpy.broadcast_shapes(values_pijlk.shape, above_ground_pijlk.shape) == values_pijlk.shape and \
+            above_ground_pijlk.all():
+        return values_pijlk
+    return values_pijlk * above_ground_pijlk
 
 
 class GroundModel(Model, ModelMethodWrapper):
@@ -54,7 +66,7 @@ class Mirror(GroundModel):
         new_kwargs = self._update_kwargs(h_ilk=h_ilk, dh_ijlk=dh_ijlk, IJLK=IJLK, **kwargs)
         above_ground = ((new_kwargs['h_ilk'][:, na, :] + new_kwargs['dh_ijlk']) > 0)
         values_pijlk = func(**new_kwargs)
-        deficit_mijlk = np.reshape(values_pijlk * above_ground, (2,) + IJLK)
+        deficit_mijlk = np.reshape(_above_ground_only(values_pijlk, above_ground), (2,) + IJLK)
         superpositionModel = self.superpositionModel or getattr(func, '__self__', func).superpositionModel
         return superpositionModel(deficit_mijlk)
 
