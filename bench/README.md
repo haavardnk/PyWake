@@ -15,7 +15,13 @@ python bench/speed.py --base ../pywake-master --head . --pairs 5 --out speed.jso
 python bench/speed.py --base ../pywake-master --head . --pairs 1 --runs 1 --max-memory 26 --cases turbopark-scale2000
 python bench/waterfall.py --repo . --commits master master..performance --workdir ../waterfall --cases turbopark-grid400
 python bench/profile_case.py --root . --case turbopark-grid400
+python bench/tables.py compare speed.json --farms 400 1000
+python bench/tables.py waterfall waterfall.json
+python bench/charts.py scaling speed.json --out scaling.png
+python bench/charts.py waterfall waterfall.json --out waterfall.png
 ```
+
+[RESULTS.md](RESULTS.md) has the current results of `performance` against `master`.
 
 - `identity.py` stores `WS_eff`, `TI_eff`, `CT`, `Power` and total AEP per case and compares them
   bytewise (`tobytes()`), so the comparison also catches last-bit differences.
@@ -37,6 +43,11 @@ python bench/profile_case.py --root . --case turbopark-grid400
   and reports the fastest-run ratio against the first commit. Ranges expand to the first-parent
   commits that change library code under `py_wake/`, outside the tests; each commit is checked out
   once as a detached worktree under `--workdir` (remove them with `git worktree remove`).
+- `tables.py` prints `speed.py` reports as one before and after table (time, speed-up, memory and how
+  many times less memory) and `waterfall.py` reports as per-commit time and memory tables. `charts.py`
+  draws time and peak memory against farm size and the speed-up and memory after each commit. Later
+  reports override earlier ones for the same case, and `--footprint` marks reports whose memory column
+  is the peak footprint instead of RSS.
 - Cases are `<model>-<farm>`. Models: `turbopark` (`Nygaard_2022`: TurboGaussian, Mirror, Gaussian
   overlap, SquaredSum, deficit scaled with the downstream ambient speed), `nojlocal` (`NOJLocalDeficit`
   with area overlap, `ct2a_mom1d`, `a=[0, 0.04]`, no effective TI, LinearSum), `fugamultilut` (two LUTs),
