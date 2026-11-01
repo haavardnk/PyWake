@@ -29,7 +29,9 @@ from py_wake.deficit_models.gaussian import NiayifarGaussianDeficit, Carbajofuer
 from py_wake.flow_map import XYGrid
 from py_wake.turbulence_models.stf import STF2017TurbulenceModel
 from py_wake.utils.gradients import autograd, cs, fd, cabs
-from py_wake.rotor_avg_models import gaussian_overlap_model
+from py_wake.rotor_avg_models import area_overlap_model, gaussian_overlap_model
+from autograd.numpy.numpy_boxes import ArrayBox
+from py_wake.turbulence_models.gcl_turb import GCLTurbulence
 from py_wake.utils.grid_interpolator import GridInterpolator
 from py_wake.utils.numpy_utils import Numpy32
 import functools
@@ -450,4 +452,158 @@ def test_overlap_kernel_gradients(gradient_method, monkeypatch):
         return wfm.aep_gradients(gradient_method, ['x', 'y', 'h'], x=x, y=y, h=h, wd=[260, 270, 280], ws=[6, 10])
     res, ref, calls = compiled_and_stock_overlap(monkeypatch, run)
     assert (calls['fast'] > 0) == (gradient_method is fd)
+    assert res.tobytes() == ref.tobytes()
+
+
+def _stock_cal_overlapping_area_factor(self, R1, R2, d):
+    shape = tuple(np.max([R1.shape, R2.shape, d.shape], 0))
+    R1, R2, d = [np.broadcast_to(a, shape) for a in [R1, R2, d]]
+
+    Rmax = np.where(R1 < R2, R2, R1)
+    Rmin = np.where(R1 < R2, R1, R2)
+
+    index_fullwake = (d <= (Rmax - Rmin))
+    dtype = (float, np.complex128)[bool(np.any([np.iscomplexobj(x) for x in [R1, R2, d]]))]
+    A_ol_f = np.where(index_fullwake, 1, 0).astype(dtype)
+
+    mask = (d > (Rmax - Rmin)) & (d < (Rmin + Rmax))
+    if any([isinstance(x, ArrayBox) for x in [R1, R2, d]]):
+        p_wake_mask = mask
+        mask = slice(None)
+    else:
+        p_wake_mask = None
+
+    eps = 2 * np.finfo(float).eps
+
+    def arccos_lim(x):
+        return np.arccos((np.clip(x, -1.0 + eps, +1.0 - eps)))
+
+    alpha = arccos_lim((Rmax[mask]**2.0 + d[mask]**2 - Rmin[mask]**2) /
+                       (2.0 * np.maximum(Rmax[mask] * d[mask], eps)))
+
+    beta = arccos_lim((Rmin[mask]**2.0 + d[mask]**2 - Rmax[mask]**2) /
+                      (2.0 * np.maximum(Rmin[mask] * d[mask], eps)))
+
+    A_triangle = np.sin(alpha) * R1[mask] * d[mask]
+
+    p_wake_f = np.maximum((alpha * Rmax[mask]**2 + beta * Rmin[mask]**2 -
+                           A_triangle) / (R2[mask]**2 * np.pi), 0)
+
+    if p_wake_mask is None:
+        A_ol_f[mask] = p_wake_f
+    else:
+        A_ol_f = np.where(p_wake_mask, p_wake_f, A_ol_f)
+    return A_ol_f
+
+
+def compiled_and_stock_area_overlap(monkeypatch, func):
+    build, calls = area_overlap_model._classify_overlap_kernel, []
+
+    def spy_build():
+        kernel = build()
+
+        def spy(*args):
+            calls.append(kernel(*args))
+            return calls[-1]
+        return spy
+    monkeypatch.setattr(area_overlap_model, '_classify_overlap_kernel', spy_build)
+    res = func()
+    monkeypatch.setattr(AreaOverlapAvgModel, '_cal_overlapping_area_factor', _stock_cal_overlapping_area_factor)
+    return res, func(), calls
+
+
+area_rng = np.random.default_rng(1)
+area_R1 = area_rng.uniform(20, 120, (1, 37, 6, 5))
+area_R2 = area_rng.uniform(20, 80, (1, 37, 6, 1))
+area_d = np.abs(area_rng.normal(0, 150, (1, 37, 6, 1)))
+area_values = [0., -0., 5e-324, 10., 20., 30., 40., 50., 70., 80., 1e300, np.inf, np.nan, -np.nan]
+area_edges = [x.reshape(1, -1, 1, 1).copy() for x in np.meshgrid(area_values, area_values, area_values, indexing='ij')]
+area_rows = (area_rng.uniform(20, 120, (3, 37, 6, 5)), area_rng.uniform(20, 80, (1, 37, 6, 1)),
+             np.abs(area_rng.normal(0, 150, (3, 37, 6, 1))))
+
+
+@pytest.mark.parametrize('R1,R2,d,fast', [
+    pytest.param(area_R1, area_R2, area_d, 1, id='niayifar'),
+    pytest.param(area_R1[..., :1].copy(), area_R2, area_d, 1, id='park2'),
+    pytest.param(*area_rows, 1, id='all2all'),
+    pytest.param(*area_edges, 1, id='edges'),
+    pytest.param(np.reshape(area_values, (1, 14, 1, 1)), np.reshape(area_values, (1, 1, 14, 1)),
+                 np.reshape(area_values, (1, 1, 1, 14)), 1, id='edges_broadcast'),
+    pytest.param(np.empty((37, 6, 5, 1)).transpose(3, 0, 1, 2), area_R2, area_d, 1, id='relaxed_strides'),
+    pytest.param(area_R2, area_R1, area_d, 1, id='swapped'),
+    pytest.param(area_R1[:, :0], area_R2[:, :0], area_d[:, :0], 1, id='empty'),
+    pytest.param(np.asfortranarray(area_R1), area_R2, area_d, 0, id='fortran_R1'),
+    pytest.param(area_R1[:, ::2], area_R2[:, ::2], area_d[:, ::2], 0, id='strided'),
+    pytest.param(area_R1, area_R2.view(SubArray), area_d, 0, id='subclass'),
+    pytest.param(area_R1, area_R2, area_d + 0j, 0, id='complex'),
+    pytest.param(area_R1.astype(np.float32), area_R2, area_d, 0, id='float32'),
+    pytest.param(area_R1[0], area_R2[0], area_d[0], 0, id='three_d'),
+    pytest.param(area_R1[..., na], area_R2[..., na], area_d[..., na], 0, id='five_d')])
+@pytest.mark.filterwarnings('ignore::RuntimeWarning')
+@pytest.mark.filterwarnings('ignore::numpy.exceptions.ComplexWarning')
+def test_area_overlap_kernel(R1, R2, d, fast, monkeypatch):
+    def run():
+        return AreaOverlapAvgModel()._cal_overlapping_area_factor(R1, R2, d)
+    res, ref, calls = compiled_and_stock_area_overlap(monkeypatch, run)
+    assert len(calls) == fast
+    assert type(res) is type(ref)
+    assert res.dtype == ref.dtype
+    assert res.shape == ref.shape
+    assert res.strides == ref.strides
+    assert res.tobytes() == ref.tobytes()
+
+
+def test_area_overlap_kernel_numpy32(monkeypatch):
+    def run():
+        with Numpy32():
+            return AreaOverlapAvgModel()._cal_overlapping_area_factor(area_R1, area_R2, area_d)
+    res, ref, calls = compiled_and_stock_area_overlap(monkeypatch, run)
+    assert calls == []
+    assert res.dtype == ref.dtype
+    assert res.tobytes() == ref.tobytes()
+
+
+def test_area_overlap_kernel_edges_cover_all_cases():
+    with np.errstate(all='ignore'):
+        ref = _stock_cal_overlapping_area_factor(None, *area_edges)
+    assert {0., 1.} < set(ref.ravel().tolist())
+    assert ((ref > 0) & (ref < 1)).any()
+    assert np.isnan(ref).any()
+
+
+@pytest.mark.parametrize('wfm_cls', [PropagateDownwind, All2AllIterative])
+@pytest.mark.parametrize('model', [
+    pytest.param(lambda wfm_cls, site, wt: wfm_cls(site, wt, NOJDeficit(), superpositionModel=SquaredSum()), id='NOJ'),
+    pytest.param(lambda wfm_cls, site, wt: wfm_cls(site, wt, NOJDeficit(groundModel=Mirror()),
+                                                   superpositionModel=SquaredSum()), id='NOJ_mirror'),
+    pytest.param(lambda wfm_cls, site, wt: wfm_cls(site, wt, NiayifarGaussianDeficit(), superpositionModel=SquaredSum(),
+                                                   turbulenceModel=CrespoHernandez()), id='niayifar'),
+    pytest.param(lambda wfm_cls, site, wt: wfm_cls(site, wt, BastankhahGaussianDeficit(),
+                                                   turbulenceModel=GCLTurbulence()), id='gcl')])
+def test_area_overlap_kernel_wfm(wfm_cls, model, monkeypatch):
+    site = Hornsrev1Site()
+    x, y = site.initial_position.T
+    wfm = model(wfm_cls, site, V80())
+
+    def run():
+        sim_res = wfm(x, y, wd=np.arange(0, 360, 15), ws=[6, 10])
+        flow_map = sim_res.flow_map(XYGrid(resolution=30), wd=[270, 285], ws=10)
+        return [sim_res[k].values for k in ['WS_eff', 'TI_eff', 'CT', 'Power']] + [flow_map.WS_eff.values,
+                                                                                  flow_map.TI_eff.values]
+    res, ref, calls = compiled_and_stock_area_overlap(monkeypatch, run)
+    assert calls
+    for actual, expected in zip(res, ref):
+        assert actual.tobytes() == expected.tobytes()
+
+
+@pytest.mark.parametrize('gradient_method', [autograd, cs, fd])
+def test_area_overlap_kernel_gradients(gradient_method, monkeypatch):
+    x, y = np.array([0., 400, 800]), np.array([0., 50, -30])
+    wfm = PropagateDownwind(UniformSite(), V80(), NOJDeficit(), superpositionModel=SquaredSum(),
+                            turbulenceModel=CrespoHernandez())
+
+    def run():
+        return wfm.aep_gradients(gradient_method, ['x', 'y'], x=x, y=y, wd=[260, 270, 280], ws=[6, 10])
+    res, ref, calls = compiled_and_stock_area_overlap(monkeypatch, run)
+    assert bool(calls) == (gradient_method is fd)
     assert res.tobytes() == ref.tobytes()
