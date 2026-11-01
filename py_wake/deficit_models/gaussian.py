@@ -63,6 +63,40 @@ def _compiled_deficit_centre(sigma_ijlk, cw_ijlk, D_src_il, ct_ilk, WS_ref_ijlk,
     return deficit_centre_ijlk
 
 
+def _linear_sigma(expansion, dw, epsilon_D, sigma):
+    I, J, L, K = sigma.shape
+    k_step = dw.shape[3] > 1
+    for i in range(I):
+        for j in range(J):
+            for l in range(L):
+                for k in range(K):
+                    sigma[i, j, l, k] = expansion[i, l, k] * dw[i, j, l, k * k_step] + epsilon_D[i, l, k]
+
+
+@functools.lru_cache
+def _linear_sigma_kernel():
+    ilk_in = numba.types.Array(numba.float64, 3, 'C', readonly=True)
+    ijlk_in = numba.types.Array(numba.float64, 4, 'A', readonly=True)
+    return numba.njit(numba.void(ilk_in, ijlk_in, ilk_in, numba.float64[:, :, :, ::1]), error_model='numpy')(_linear_sigma)
+
+
+def _compiled_linear_sigma(k_ilk, dw_ijlk, epsilon_ilk, D_src_il):
+    arrays = k_ilk, dw_ijlk, epsilon_ilk, D_src_il
+    if any(type(x) is not numpy.ndarray or x.dtype != numpy.float64 for x in arrays) or \
+            [x.ndim for x in arrays] != [3, 4, 3, 2] or not all(x.flags.c_contiguous for x in arrays):
+        return None
+    epsilon_D_ilk = epsilon_ilk * D_src_il[..., na]
+    # NaN payloads depend on operand order, which LLVM may commute, unless every NaN is generated in the loop
+    if any(numpy.isnan(x).any() for x in (k_ilk, dw_ijlk, epsilon_D_ilk)):
+        return None
+    shape = numpy.broadcast_shapes(k_ilk[:, na].shape, dw_ijlk.shape, epsilon_D_ilk[:, na].shape)
+    I, J, L, K = shape
+    k_ilk, epsilon_D_ilk = [numpy.ascontiguousarray(numpy.broadcast_to(x, (I, L, K))) for x in (k_ilk, epsilon_D_ilk)]
+    sigma_ijlk = numpy.empty(shape)
+    _linear_sigma_kernel()(k_ilk, numpy.broadcast_to(dw_ijlk, (I, J, L, dw_ijlk.shape[3])), epsilon_D_ilk, sigma_ijlk)
+    return sigma_ijlk
+
+
 class BastankhahGaussianDeficit(ConvectionDeficitModel):
     """Implemented according to
     Bastankhah M and Porté-Agel F.
@@ -91,8 +125,11 @@ class BastankhahGaussianDeficit(ConvectionDeficitModel):
 
     def sigma_ijlk(self, D_src_il, dw_ijlk, ct_ilk, **kwargs):
         # dimensional wake expansion
-        return self.k_ilk(**kwargs)[:, na] * dw_ijlk + \
-            self.epsilon_ilk(ct_ilk, **kwargs)[:, na] * D_src_il[:, na, :, na]
+        k_ilk, epsilon_ilk = self.k_ilk(**kwargs), self.epsilon_ilk(ct_ilk, **kwargs)
+        sigma_ijlk = _compiled_linear_sigma(k_ilk, dw_ijlk, epsilon_ilk, D_src_il)
+        if sigma_ijlk is not None:
+            return sigma_ijlk
+        return k_ilk[:, na] * dw_ijlk + epsilon_ilk[:, na] * D_src_il[:, na, :, na]
 
     def ct_func(self, ct_ilk, **_):
         return ct_ilk[:, na]
