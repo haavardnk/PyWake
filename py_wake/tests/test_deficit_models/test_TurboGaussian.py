@@ -32,7 +32,7 @@ def _stock_sigma_ijlk(self, D_src_il, dw_ijlk, ct_ilk, **kwargs):
 
 
 def _compiled_and_stock(monkeypatch, func):
-    build, calls = gaussian._turbo_kernels, {'fast': 0, 'nan': 0}
+    build, calls, outputs = gaussian._turbo_kernels, {'fast': 0, 'nan': 0}, []
 
     def spy_kernels():
         expansion_terms, sigma = build()
@@ -40,12 +40,13 @@ def _compiled_and_stock(monkeypatch, func):
         def spy_sigma(*args):
             nan = sigma(*args)
             calls['nan' if nan else 'fast'] += 1
+            outputs.append(args[-1])
             return nan
         return expansion_terms, spy_sigma
     monkeypatch.setattr(gaussian, '_turbo_kernels', spy_kernels)
     res = func()
     monkeypatch.setattr(TurboGaussianDeficit, 'sigma_ijlk', _stock_sigma_ijlk)
-    return res, func(), calls
+    return res, func(), calls, outputs
 
 
 def _inputs(I, J, L, K, dw_shape, ct_shape, TI_shape, dw_values, ct_values, TI_values):
@@ -56,11 +57,12 @@ def _inputs(I, J, L, K, dw_shape, ct_shape, TI_shape, dw_values, ct_values, TI_v
                 TI_ilk=np.resize(TI_values, TI_shape))
 
 
-finite = dict(dw_values=[-1e3, -1., -0., 0., 1e-300, 1., 80., 1e4, 1e100], ct_values=[0, 1e-30, .1, .8, 1., 1.2],
+finite = dict(dw_values=[-1e3, -1., -0., 0., -5e-324, -1e-300, 1e-300, 1., 80., 1e4, 1e100], ct_values=[0, 1e-30, .1, .8, 1., 1.2],
               TI_values=[.06, 1e-3, .1])
 negative_TI = {**finite, 'TI_values': [-.06, -1e-3]}
 nan = dict(dw_values=[-np.inf, -1., 0., 80., 1e300, np.inf, np.nan], ct_values=[0, .8, np.nan, 1.2],
            TI_values=[.06, 0., -np.nan, np.nan])
+nan_dw = {**nan, 'ct_values': finite['ct_values'], 'TI_values': finite['TI_values']}
 mirror = _inputs(1, 76, 3, 6, (1, 76, 3, 1), (1, 3, 6), (1, 3, 1), **finite)
 
 
@@ -71,6 +73,13 @@ class SubArray(np.ndarray):
 @pytest.mark.parametrize('kwargs,fast,nan_calls', [
     pytest.param(mirror, 1, 0, id='mirror_shared'),
     pytest.param(_inputs(3, 76, 2, 6, (3, 76, 2, 6), (3, 2, 6), (3, 2, 6), **finite), 1, 0, id='all2all'),
+    pytest.param(_inputs(3, 76, 2, 6, (1, 76, 2, 1), (3, 2, 6), (1, 2, 1), **finite), 1, 0, id='broadcast_dw'),
+    pytest.param(_inputs(3, 76, 2, 6, (3, 76, 2, 6), (1, 2, 1), (1, 1, 6), **finite), 1, 0, id='broadcast_ilk'),
+    pytest.param(_inputs(2, 76, 3, 6, (2, 76, 3, 6), (2, 3, 1), (2, 3, 1), **finite), 1, 0, id='K_from_dw'),
+    pytest.param({**_inputs(1, 76, 3, 6, (1, 76, 3, 6), (1, 3, 6), (1, 3, 1), **finite),
+                  'D_src_il': np.array([[80., 120., 90.], [100., 80., 120.]])}, 1, 0, id='I_from_D'),
+    pytest.param({**_inputs(2, 76, 3, 6, (2, 76, 3, 1), (2, 3, 6), (2, 3, 1), **finite),
+                  'D_src_il': np.array([[80., 120., 90.]])}, 1, 0, id='broadcast_D'),
     pytest.param(_inputs(2, 76, 1, 1, (2, 76, 1, 1), (2, 1, 1), (2, 1, 1), **finite), 1, 0, id='one_case'),
     pytest.param({**mirror, 'dw_ijlk': np.asfortranarray(np.broadcast_to(mirror['dw_ijlk'], (1, 76, 3, 6)))},
                  1, 0, id='fortran_dw'),
@@ -78,32 +87,56 @@ class SubArray(np.ndarray):
                  1, 0, id='strided_dw'),
     pytest.param({**mirror, 'dw_ijlk': np.broadcast_to(mirror['dw_ijlk'], (1, 76, 3, 6))}, 1, 0, id='zero_stride_dw'),
     pytest.param({**mirror, 'dw_ijlk': mirror['dw_ijlk'][:, :0]}, 1, 0, id='empty'),
-    pytest.param(_inputs(3, 76, 2, 6, (3, 76, 2, 6), (3, 2, 6), (3, 2, 6), **negative_TI), 1, 0, id='negative_TI'),
+    pytest.param(_inputs(0, 76, 3, 6, (0, 76, 3, 1), (0, 3, 6), (0, 3, 1), **finite), 1, 0, id='empty_I'),
+    pytest.param(_inputs(1, 76, 0, 6, (1, 76, 0, 1), (1, 0, 6), (1, 0, 1), **finite), 1, 0, id='empty_L'),
+    pytest.param(_inputs(1, 76, 3, 0, (1, 76, 3, 1), (1, 3, 0), (1, 3, 1), **finite), 1, 0, id='empty_K'),
+    pytest.param(_inputs(3, 76, 2, 6, (3, 76, 2, 6), (3, 2, 6), (3, 2, 6), **negative_TI), 0, 0, id='negative_TI'),
+    pytest.param({**mirror, 'TI_ilk': np.array([[[.06], [0.], [.1]]])}, 0, 0, id='zero_TI'),
+    pytest.param({**mirror, 'D_src_il': np.array([[80., -0., 120.]])}, 0, 0, id='negative_zero_D'),
+    pytest.param({**mirror, 'D_src_il': np.array([[80., 0., 120.]])}, 0, 0, id='zero_D'),
+    pytest.param({**mirror, 'D_src_il': np.array([[80., -80., 120.]])}, 0, 0, id='negative_D'),
+    pytest.param({**mirror, 'D_src_il': np.array([[80., np.nan, 120.]])}, 0, 0, id='nan_D'),
+    pytest.param({**mirror, 'D_src_il': np.array([[80., np.inf, 120.]])}, 0, 1, id='inf_D'),
+    pytest.param({**mirror, 'TI_ilk': np.array([[[.06], [np.inf], [.1]]])}, 0, 1, id='inf_TI'),
+    pytest.param({**mirror, 'dw_ijlk': np.full((1, 2, 3, 1), [[[-1e308], [1e308], [1e300]]])}, 0, 1, id='huge_dw'),
     pytest.param(dict(D_src_il=np.array([[1.0929646618417081e+292]]), dw_ijlk=np.array([[[[2.8740664042081332e+287]]]]),
                       ct_ilk=np.array([[[1.118158735479755]]]), TI_ilk=np.array([[[4.498365519782593e+20]]])),
                  1, 0, id='inf'),
-    pytest.param(_inputs(1, 76, 3, 6, (1, 76, 3, 1), (1, 3, 6), (1, 3, 1), **nan), 0, 1, id='nan'),
-    pytest.param(_inputs(3, 76, 2, 6, (3, 76, 2, 6), (3, 2, 6), (3, 2, 6), **nan), 0, 1, id='nan_all2all'),
+    pytest.param(_inputs(1, 76, 3, 6, (1, 76, 3, 1), (1, 3, 6), (1, 3, 1), **nan_dw), 0, 1, id='nan_dw'),
+    pytest.param(_inputs(3, 76, 2, 6, (3, 76, 2, 6), (3, 2, 6), (3, 2, 6), **nan_dw), 0, 1, id='nan_dw_all2all'),
+    pytest.param(_inputs(1, 76, 3, 6, (1, 76, 3, 1), (1, 3, 6), (1, 3, 1), **nan), 0, 0, id='nan_beta'),
+    pytest.param(_inputs(3, 76, 2, 6, (3, 76, 2, 6), (3, 2, 6), (3, 2, 6), **nan), 0, 0, id='nan_beta_all2all'),
     pytest.param({**mirror, 'TI_ilk': np.full((1, 3, 1), -np.nan), 'ct_ilk': np.full((1, 3, 6), np.nan)},
-                 0, 1, id='negative_nan_TI'),
+                 0, 0, id='negative_nan_beta'),
     pytest.param(_inputs(1, 76, 3, 6, (2, 1, 76, 3, 6), (1, 3, 6), (1, 3, 1), **finite), 0, 0, id='five_d'),
     pytest.param({**mirror, 'dw_ijlk': mirror['dw_ijlk'].view(SubArray)}, 0, 0, id='subclass_dw'),
     pytest.param({**mirror, 'dw_ijlk': mirror['dw_ijlk'] + 0j}, 0, 0, id='complex_dw'),
     pytest.param({**mirror, 'ct_ilk': mirror['ct_ilk'] + 1e-20j}, 0, 0, id='complex_ct'),
-    pytest.param({**mirror, 'TI_ilk': np.full((1, 3, 1), .06, dtype=np.float32)}, 0, 0, id='float32_TI')])
+    pytest.param({**mirror, 'TI_ilk': np.full((1, 3, 1), .06, dtype=np.float32)}, 0, 0, id='float32_TI'),
+    pytest.param({**mirror, 'D_src_il': mirror['D_src_il'].astype(np.float32)}, 0, 0, id='float32_D')])
 @pytest.mark.filterwarnings('ignore::RuntimeWarning')
 def test_sigma_ijlk_kernel(kwargs, fast, nan_calls, monkeypatch):
-    sigma_ijlk, ref, calls = _compiled_and_stock(monkeypatch, lambda: TurboGaussianDeficit().sigma_ijlk(**kwargs))
+    sigma_ijlk, ref, calls, outputs = _compiled_and_stock(monkeypatch, lambda: TurboGaussianDeficit().sigma_ijlk(**kwargs))
     assert calls == {'fast': fast, 'nan': nan_calls}
+    assert any(sigma_ijlk is x for x in outputs) == bool(fast)
     assert sigma_ijlk.dtype == ref.dtype
     assert sigma_ijlk.shape == ref.shape
     assert sigma_ijlk.tobytes() == ref.tobytes()
 
 
 @pytest.mark.filterwarnings('ignore::RuntimeWarning')
+@pytest.mark.parametrize('cTI,TI,fast', [([-1.5, -.8], -.06, 1), ([1.5, -.8], .06, 0), ([1.5, .8], -.06, 0)])
+def test_sigma_ijlk_kernel_beta_sign(cTI, TI, fast, monkeypatch):
+    kwargs = {**mirror, 'TI_ilk': np.full((1, 3, 1), TI)}
+    sigma_ijlk, ref, calls, _ = _compiled_and_stock(monkeypatch, lambda: TurboGaussianDeficit(cTI=cTI).sigma_ijlk(**kwargs))
+    assert calls == {'fast': fast, 'nan': 0}
+    assert sigma_ijlk.tobytes() == ref.tobytes()
+
+
+@pytest.mark.filterwarnings('ignore::RuntimeWarning')
 def test_sigma_ijlk_kernel_numpy32(monkeypatch):
     with Numpy32():
-        sigma_ijlk, ref, calls = _compiled_and_stock(monkeypatch, lambda: TurboGaussianDeficit().sigma_ijlk(**mirror))
+        sigma_ijlk, ref, calls, _ = _compiled_and_stock(monkeypatch, lambda: TurboGaussianDeficit().sigma_ijlk(**mirror))
     assert calls == {'fast': 0, 'nan': 0}
     assert sigma_ijlk.tobytes() == ref.tobytes()
 
@@ -120,7 +153,7 @@ def test_sigma_ijlk_kernel_wfm(wfm_cls, use_effective_ti, monkeypatch):
     def run():
         sim_res = wfm(x, y, wd=np.arange(0, 360, 30), ws=[6, 8])
         return sim_res, sim_res.flow_map(XYGrid(resolution=20), wd=270, ws=8)
-    (sim_res, flow_map), (ref, ref_flow_map), calls = _compiled_and_stock(monkeypatch, run)
+    (sim_res, flow_map), (ref, ref_flow_map), calls, _ = _compiled_and_stock(monkeypatch, run)
     assert calls['fast'] > 0
     for k in ['WS_eff', 'TI_eff', 'CT', 'Power']:
         assert sim_res[k].values.tobytes() == ref[k].values.tobytes()
