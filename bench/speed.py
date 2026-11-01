@@ -1,5 +1,4 @@
 import argparse
-import contextlib
 import json
 import os
 import signal
@@ -10,8 +9,8 @@ import tempfile
 import time
 
 import matrix
-import psutil
 from checkout import describe, machine
+from memory import footprint, free_percent
 
 SINGLE_THREAD = {
     key: "1"
@@ -31,18 +30,20 @@ GB = 1e9
 def add_limit_arguments(parser):
     parser.add_argument("--runs", type=int, default=2)
     parser.add_argument("--timeout", type=float, default=3600)
-    parser.add_argument("--max-rss", type=float, help="kill a run whose RSS exceeds this many GB")
-    parser.add_argument("--min-available", type=float, default=2, help="kill a run when less GB stay available")
+    parser.add_argument("--max-memory", type=float, help="kill a run whose memory footprint exceeds this many GB")
+    parser.add_argument(
+        "--min-free", type=float, default=15, help="kill a run when less system memory is free, in percent"
+    )
     parser.add_argument("--python", default=sys.executable)
 
 
-def limit_breached(child, started, args):
+def limit_breached(memory, started, args):
     if time.monotonic() - started > args.timeout:
         return f"time above {args.timeout:.0f} s"
-    if args.max_rss and child.memory_info().rss > args.max_rss * GB:
-        return f"RSS above {args.max_rss:g} GB"
-    if psutil.virtual_memory().available < args.min_available * GB:
-        return f"available memory below {args.min_available:g} GB"
+    if args.max_memory and memory > args.max_memory * GB:
+        return f"memory above {args.max_memory:g} GB"
+    if free_percent() < args.min_free:
+        return f"system memory below {args.min_free:g}% free"
     return None
 
 
@@ -53,10 +54,11 @@ def measure(root, case, args):
             [args.python, WORKER, "--root", root, "--case", case, "--out", out, "--runs", str(args.runs)],
             env={**os.environ, **SINGLE_THREAD},
         )
-        child, started, failed = psutil.Process(process.pid), time.monotonic(), None
+        started, failed, peak = time.monotonic(), None, 0
         while (reaped := os.wait4(process.pid, os.WNOHANG))[0] == 0:
-            with contextlib.suppress(psutil.NoSuchProcess):
-                failed = failed or limit_breached(child, started, args)
+            memory = footprint(process.pid)
+            peak = max(peak, memory)
+            failed = failed or limit_breached(memory, started, args)
             if failed:
                 os.kill(process.pid, signal.SIGKILL)
             time.sleep(0.1)
@@ -64,19 +66,24 @@ def measure(root, case, args):
         process.returncode = os.waitstatus_to_exitcode(status)
         rss = usage.ru_maxrss * RSS_UNIT
         if failed:
-            return {"failed": failed, "rss": rss}
+            return {"failed": failed, "rss": rss, "footprint": peak}
         if process.returncode != 0:
             raise RuntimeError(f"{case} failed in {root} with exit code {process.returncode}")
         with open(out) as fid:
             timing = json.load(fid)
     timing["rss"] = rss
+    timing["footprint"] = peak
     return timing
 
 
 def summary(samples):
     failed = [sample["failed"] for sample in samples if "failed" in sample]
     if failed:
-        return {"failed": f"{len(failed)}/{len(samples)} {failed[0]}", "rss": max(sample["rss"] for sample in samples)}
+        return {
+            "failed": f"{len(failed)}/{len(samples)} {failed[0]}",
+            "rss": max(sample["rss"] for sample in samples),
+            "footprint": max(sample["footprint"] for sample in samples),
+        }
     first = [sample["runs"][0]["cpu"] for sample in samples]
     last = [sample["runs"][-1]["cpu"] for sample in samples]
     return {
@@ -86,6 +93,7 @@ def summary(samples):
         "first_extra": statistics.median(f - w for f, w in zip(first, last)) if len(samples[0]["runs"]) > 1 else None,
         "build": statistics.median(sample["build"] for sample in samples),
         "rss": statistics.median(sample["rss"] for sample in samples),
+        "footprint": statistics.median(sample["footprint"] for sample in samples),
         "cpu_samples": last,
     }
 
