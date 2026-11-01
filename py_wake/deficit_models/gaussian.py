@@ -14,7 +14,53 @@ from py_wake.utils.gradients import cabs
 from py_wake.utils import gradients
 from py_wake.utils.model_utils import DeprecatedModel
 from py_wake.rotor_avg_models.rotor_avg_model import RotorCenter
-from py_wake.deficit_models.utils import ct2a_madsen
+from py_wake.deficit_models.utils import ct2a_madsen, ct2a_mom1d
+
+
+_FLOAT64_TINY = numpy.finfo(numpy.float64).tiny
+
+
+def _mom1d_deficit_centre(sigma, ct, D, WS_ref, deficit_centre):
+    tiny_sigma = False
+    I, J, L, K = deficit_centre.shape
+    for i in range(I):
+        for j in range(J):
+            for l in range(L):
+                for k in range(K):
+                    ijlk = i, j, l, k
+                    sigma_sqr = sigma[ijlk] * sigma[ijlk]
+                    # the stock code applies exp unless -1 / (2 * sigma_sqr) is finite or -0
+                    tiny_sigma |= not sigma_sqr >= _FLOAT64_TINY
+                    ct_ratio = ct[ijlk] * (D[ijlk] * D[ijlk]) / (8. * sigma_sqr)
+                    centre = 2. * (.5 * (1. - numpy.sqrt(1. - (1. if ct_ratio > 1 else ct_ratio))))
+                    deficit_centre[ijlk] = WS_ref[ijlk] * (1. if centre > 1 else centre)
+    return tiny_sigma
+
+
+@functools.lru_cache
+def _deficit_centre_kernel():
+    inputs = numba.types.Array(numba.float64, 4, 'A', readonly=True)
+    signature = numba.boolean(inputs, inputs, inputs, inputs, numba.float64[:, :, :, ::1])
+    return numba.njit(signature, error_model='numpy')(_mom1d_deficit_centre)
+
+
+def _compiled_deficit_centre(sigma_ijlk, cw_ijlk, D_src_il, ct_ilk, WS_ref_ijlk, **_):
+    arrays = sigma_ijlk, cw_ijlk, D_src_il, ct_ilk, WS_ref_ijlk
+    if np.backend is not numpy or any(type(x) is not numpy.ndarray for x in arrays) or \
+            any(x.dtype != numpy.float64 for x in arrays[:4]) or \
+            numpy.result_type(WS_ref_ijlk, numpy.float64) != numpy.float64 or \
+            [x.ndim for x in arrays] != [4, 4, 2, 3, 4]:
+        return None
+    ct_ijlk, D_src_ijlk, WS_ref_ijlk = ct_ilk[:, na], D_src_il[:, na, :, na], WS_ref_ijlk.astype(numpy.float64, copy=False)
+    shape = numpy.broadcast_shapes(sigma_ijlk.shape, ct_ijlk.shape, D_src_ijlk.shape, WS_ref_ijlk.shape)
+    if sigma_ijlk.shape != shape or not sigma_ijlk.flags.c_contiguous or \
+            any(numpy.isnan(x).any() for x in (ct_ilk, D_src_il, WS_ref_ijlk)) or not numpy.isfinite(cw_ijlk).all():
+        return None
+    deficit_centre_ijlk = numpy.empty(shape)
+    if _deficit_centre_kernel()(sigma_ijlk, *[numpy.broadcast_to(x, shape) for x in (ct_ijlk, D_src_ijlk, WS_ref_ijlk)],
+                                deficit_centre_ijlk):
+        return None
+    return deficit_centre_ijlk
 
 
 class BastankhahGaussianDeficit(ConvectionDeficitModel):
@@ -80,6 +126,10 @@ class BastankhahGaussianDeficit(ConvectionDeficitModel):
         if cls.calc_deficit is not BastankhahGaussianDeficit.calc_deficit or \
                 cls._calc_deficit is not BastankhahGaussianDeficit._calc_deficit:
             return self.calc_deficit(cw_ijlk=cw_ijlk * 0, **kwargs)
+        if self.ct2a is ct2a_mom1d and cls.ct_func is BastankhahGaussianDeficit.ct_func:
+            deficit_centre_ijlk = _compiled_deficit_centre(sigma_ijlk, cw_ijlk, **kwargs)
+            if deficit_centre_ijlk is not None:
+                return deficit_centre_ijlk
         _, sigma_sqr_ijlk, deficit_centre_ijlk, _ = self._calc_deficit(sigma_ijlk=sigma_ijlk, **kwargs)
         exponent_ijlk = -1 / (2 * sigma_sqr_ijlk) * (cw_ijlk * 0)**2
         if np.iscomplexobj(deficit_centre_ijlk) or exponent_ijlk.dtype != deficit_centre_ijlk.dtype or \
