@@ -29,8 +29,18 @@ def _numpy_pairwise_sum(terms):
 
 
 @numba.njit(error_model='numpy')
-def _search_right(axis, start, n, value):
-    lo, hi = 0, n
+def _search_right(axis, start, n, value, guess=0):
+    step = 1
+    if guess < n and not value < axis[start + guess]:
+        lo = hi = guess + 1
+        while hi < n and not value < axis[start + hi]:
+            lo, hi, step = hi + 1, hi + 1 + step, 2 * step
+        hi = min(hi, n)
+    else:
+        lo = hi = guess
+        while lo > 0 and value < axis[start + lo - 1]:
+            hi, lo, step = lo - 1, lo - 1 - step, 2 * step
+        lo = max(lo, 0)
     while lo < hi:
         mid = (lo + hi) >> 1
         if value < axis[start + mid]:
@@ -41,9 +51,19 @@ def _search_right(axis, start, n, value):
 
 
 @numba.njit(error_model='numpy')
-def _grid_position(value, axes, start, x0, dx, n, irregular, linear):
+def _search_guess(value, axes, start, n, guesses, scale):
+    position = (value - axes[start]) * scale
+    if not position > 0:
+        return 0
+    if position >= 4 * n - 1:
+        return n
+    return guesses[4 * start + int(position)]
+
+
+@numba.njit(error_model='numpy')
+def _grid_position(value, axes, start, x0, dx, n, irregular, linear, guess=0):
     if irregular:
-        i0 = min(max(_search_right(axes, start, n, value) - 1, 0), n - 2)
+        i0 = min(max(_search_right(axes, start, n, value, guess) - 1, 0), n - 2)
         xpi = i0 + (value - axes[start + i0]) / (axes[start + i0 + 1] - axes[start + i0])
     else:
         xpi = (value - x0) / dx
@@ -72,6 +92,8 @@ class _CompiledLayout(NamedTuple):
     x0: tuple
     dx: tuple
     n: tuple
+    search_guesses: numpy.ndarray
+    search_scale: tuple
 
 
 @functools.lru_cache
@@ -81,7 +103,7 @@ def _limit_kernel(corner_bit, irregular):
     pairwise_sum = n_corners >= 8
 
     @numba.njit(error_model='numpy')
-    def interpolate(xp_T, V, strides, axes, axes_start, x0, dx, n, res):
+    def interpolate(xp_T, V, strides, axes, axes_start, x0, dx, n, search_guesses, search_scale, res):
         n_points = xp_T.shape[1]
         pairwise = pairwise_sum and n_points == 1
         terms = numpy.empty(n_corners)
@@ -89,7 +111,9 @@ def _limit_kernel(corner_bit, irregular):
         offset = numpy.empty((n_dims, 2), dtype=numpy.int64)
         for p in range(n_points):
             for d in range(n_dims):
-                xpi = _grid_position(xp_T[d, p], axes, axes_start[d], x0[d], dx[d], n[d], irregular, corner_bit[d] >= 0)
+                value = xp_T[d, p]
+                guess = _search_guess(value, axes, axes_start[d], n[d], search_guesses, search_scale[d]) if irregular else 0
+                xpi = _grid_position(value, axes, axes_start[d], x0[d], dx[d], n[d], irregular, corner_bit[d] >= 0, guess)
                 lower = 0 if numpy.isnan(xpi) else int(xpi)
                 xpif = xpi - lower
                 weight[d, 0] = 1 - xpif
@@ -110,6 +134,17 @@ def _limit_kernel(corner_bit, irregular):
                     total = total + w * V[index]
             res[p] = _numpy_pairwise_sum(terms) if pairwise else total
     return interpolate
+
+
+def _search_guesses(axes):
+    guesses, scales = [], []
+    for axis in axes:
+        with numpy.errstate(all='ignore'):
+            samples = numpy.linspace(axis[0], axis[-1], 4 * len(axis))
+            scale = (4 * len(axis) - 1) / (axis[-1] - axis[0])
+        scales.append(float(scale) if numpy.isfinite(scale) and scale > 0 else 0.)
+        guesses.append(numpy.searchsorted(axis, samples, side='right'))
+    return numpy.concatenate(guesses).astype(numpy.int64), tuple(scales)
 
 
 class GridInterpolator(object):
@@ -255,7 +290,8 @@ class GridInterpolator(object):
         xp_T = numpy.require(numpy.atleast_2d(xp).T, requirements=['C', 'W'])
         res = numpy.empty(xp_T.shape[1])
         interpolate = _limit_kernel(_corner_bits(linear), len(self.irregular_axes_indexes) > 0)
-        interpolate(xp_T, layout.V, layout.strides, layout.axes, layout.axes_start, layout.x0, layout.dx, layout.n, res)
+        interpolate(xp_T, layout.V, layout.strides, layout.axes, layout.axes_start, layout.x0, layout.dx, layout.n,
+                    layout.search_guesses, layout.search_scale, res)
         return res
 
     def _linear_limit_layout(self):
@@ -276,9 +312,11 @@ class GridInterpolator(object):
         V_memory_order = V.transpose(numpy.argsort(V.strides)[::-1])
         if not V_memory_order.flags.c_contiguous:
             return None
+        search_guesses, search_scale = _search_guesses(axes)
         return _CompiledLayout(V=V_memory_order.reshape(-1), strides=tuple(s // V.itemsize for s in V.strides),
                                axes=numpy.concatenate(axes), axes_start=tuple([0] + numpy.cumsum(self.n).tolist()[:-1]),
-                               x0=tuple(self.x0.tolist()), dx=tuple(self.dx.tolist()), n=tuple(self.n.tolist()))
+                               x0=tuple(self.x0.tolist()), dx=tuple(self.dx.tolist()), n=tuple(self.n.tolist()),
+                               search_guesses=search_guesses, search_scale=search_scale)
 
 
 class EqDistRegGrid2DInterpolator():

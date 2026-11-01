@@ -12,6 +12,9 @@ from py_wake.utils.numpy_utils import Numpy32
 from py_wake.utils.grid_interpolator import (
     EqDistRegGrid2DInterpolator,
     GridInterpolator,
+    _search_guess,
+    _search_guesses,
+    _search_right,
 )
 
 
@@ -315,6 +318,57 @@ def test_grid_interpolator_compiled_limit_pickle(monkeypatch):
     unpickled = pickle.loads(pickle.dumps(interpolator))
     assert unpickled(xp).tobytes() == res.tobytes() == stock_interpolation(unpickled, xp, monkeypatch).tobytes()
     assert np.shares_memory(unpickled._compiled_layout.V, unpickled.V)
+
+
+search_axes = [np.array([0., 1]), np.array([0., 0, 0, 1, 1, 2, 2, 2]), np.array([-3., -3]),
+               np.r_[np.arange(-2560., 0, 20), np.arange(0, 7680, 30)], np.cumsum(np.random.default_rng(5).exponential(1, 200)) - 50,
+               np.r_[-np.inf, np.arange(5.), np.inf]]
+
+
+@pytest.mark.parametrize('axis', search_axes)
+def test_search_right_from_any_guess(axis):
+    values = np.r_[axis, (axis[:-1] + axis[1:]) / 2, np.nextafter(axis, -np.inf), np.nextafter(axis, np.inf),
+                   -0., 0., np.inf, -np.inf, np.nan, -np.nan, 1e300, -1e300, axis[0] - 1, axis[-1] + 1]
+    axes = np.r_[np.full(3, np.nan), axis, np.full(3, np.nan)]
+    for value in values:
+        expected = np.searchsorted(axis, value, side='right')
+        assert [_search_right(axes, 3, len(axis), value, guess) for guess in range(len(axis) + 1)] == [expected] * (len(axis) + 1)
+        assert _search_right(axes, 3, len(axis), value) == expected
+
+
+@pytest.mark.parametrize('axis', search_axes)
+def test_search_guess_in_range(axis):
+    guesses, scales = _search_guesses([np.array([0., 1, 2]), axis])
+    assert guesses.dtype == np.int64 and len(guesses) == 4 * (3 + len(axis))
+    axes = np.r_[0., 1, 2, axis]
+    with np.errstate(all='ignore'):
+        values = np.r_[axis, np.linspace(axis[0], axis[-1], 1001), -0., np.inf, -np.inf, np.nan, 1e308, -1e308, 5e-324]
+    for value in values:
+        assert 0 <= _search_guess(value, axes, 3, len(axis), guesses, scales[1]) <= len(axis)
+
+
+@pytest.mark.parametrize('axis', [a for a in search_axes if np.isfinite(a).all() and a[-1] > a[0]])
+def test_search_guess_from_samples(axis):
+    guesses, scales = _search_guesses([np.array([0., 1, 2]), axis])
+    samples = np.linspace(axis[0], axis[-1], 4 * len(axis))
+    expected = np.searchsorted(axis, samples, side='right')
+    axes = np.r_[0., 1, 2, axis]
+    for s in range(1, len(samples)):
+        assert _search_guess(samples[s], axes, 3, len(axis), guesses, scales[1]) in (expected[s - 1], expected[s])
+
+
+def test_grid_interpolator_compiled_limit_long_irregular_axes(monkeypatch):
+    rng = np.random.default_rng(7)
+    x = [np.array([80070., 120090.]), np.cumsum(rng.uniform(.5, 3, 40)) + 29., np.r_[np.arange(-2560., 0, 10), np.arange(0, 7680, 30)],
+         np.r_[0., 2.5, 2.5, np.arange(5., 315., 2.5)]]
+    V = random_table(rng, [len(xi) for xi in x])
+    interpolator = GridInterpolator(x, V, method=['nearest', 'linear', 'linear', 'linear'], bounds='limit')
+    xp = random_points(rng, x, 20000)
+    xp[::7, 2] = np.sort(xp[::7, 2])
+    xp[::11, 3] = rng.choice(x[3], len(xp[::11]))
+    for points in [xp, xp[:1], xp[:3]]:
+        assert interpolator._compiled_limit(points, [False, True, True, True]) is not None
+        assert interpolator(points).tobytes() == stock_interpolation(interpolator, points, monkeypatch).tobytes()
 
 
 if __name__ == '__main__':
