@@ -5,16 +5,14 @@ from matrix import MODEL_NAMES, names
 from py_wake import NOJ
 from py_wake.deficit_models import fuga
 from py_wake.deficit_models.fuga import FugaMultiLUTDeficit
-from py_wake.deficit_models.gaussian import IEA37SimpleBastankhahGaussian, TurboGaussianDeficit
+from py_wake.deficit_models.gaussian import IEA37SimpleBastankhahGaussian
 from py_wake.deficit_models.noj import NOJLocalDeficit
 from py_wake.deficit_models.utils import ct2a_mom1d
 from py_wake.examples.data.hornsrev1 import Hornsrev1Site, HornsrevV80, wt_x, wt_y
-from py_wake.ground_models.ground_models import Mirror
 from py_wake.literature.gaussian_models import Niayifar_PorteAgel_2016
 from py_wake.literature.turbopark import Nygaard_2022
 from py_wake.rotor_avg_models.area_overlap_model import AreaOverlapAvgModel
-from py_wake.rotor_avg_models.gaussian_overlap_model import GaussianOverlapAvgModel
-from py_wake.superposition_models import LinearSum, SquaredSum
+from py_wake.superposition_models import LinearSum
 from py_wake.tests.test_files import tfp
 from py_wake.wind_farm_models.engineering_models import PropagateDownwind
 from py_wake.wind_turbines import WindTurbines
@@ -27,15 +25,7 @@ FUGA_LUTS = [
 ]
 
 
-def ogtp(site, wt):
-    deficit = TurboGaussianDeficit(
-        A=0.055, ct2a=ct2a_mom1d, ctlim=0.96, groundModel=Mirror(), rotorAvgModel=GaussianOverlapAvgModel()
-    )
-    deficit.WS_key = "WS_jlk"
-    return PropagateDownwind(site, wt, wake_deficitModel=deficit, superpositionModel=SquaredSum())
-
-
-def park2(site, wt):
+def noj_local(site, wt):
     deficit = NOJLocalDeficit(
         ct2a=ct2a_mom1d, a=[0, 0.04], use_effective_ws=True, use_effective_ti=False, rotorAvgModel=AreaOverlapAvgModel()
     )
@@ -53,10 +43,9 @@ def fuga_2mw(site, wt):
 
 
 MODELS = {
-    "ogtp": ogtp,
-    "park2": park2,
-    "fugamultilut": fuga_multilut,
     "turbopark": Nygaard_2022,
+    "nojlocal": noj_local,
+    "fugamultilut": fuga_multilut,
     "noj": NOJ,
     "bastankhah": IEA37SimpleBastankhahGaussian,
     "niayifar": Niayifar_PorteAgel_2016,

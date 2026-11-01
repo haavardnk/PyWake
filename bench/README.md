@@ -12,7 +12,7 @@ python bench/identity.py save --root . --out head
 python bench/identity.py compare ref-master head
 
 python bench/speed.py --base ../pywake-master --head . --pairs 5 --out speed.json
-python bench/profile_case.py --root . --case ogtp-grid400
+python bench/profile_case.py --root . --case turbopark-grid400
 ```
 
 - `identity.py` stores `WS_eff`, `TI_eff`, `CT`, `Power` and total AEP per case and compares them
@@ -23,10 +23,10 @@ python bench/profile_case.py --root . --case ogtp-grid400
   first run (numba compilation). Each run starts after `gc.collect()`: py_wake results sit in
   reference cycles, so without it the previous run's arrays can survive into the next run and
   inflate its peak memory by an amount that depends on garbage-collector timing.
-- Cases are `<model>-<farm>`. Models: `ogtp` (TurboGaussian, Mirror, Gaussian overlap, SquaredSum,
-  deficit scaled with the downstream ambient speed), `park2` (NOJLocal with area overlap,
-  LinearSum), `fugamultilut` (two LUTs), `turbopark`, `noj`, `bastankhah`, `niayifar` (Gaussian with
-  CrespoHernandez added turbulence), `fuga`. Farms: `hr1`
+- Cases are `<model>-<farm>`. Models: `turbopark` (`Nygaard_2022`: TurboGaussian, Mirror, Gaussian
+  overlap, SquaredSum, deficit scaled with the downstream ambient speed), `nojlocal` (`NOJLocalDeficit`
+  with area overlap, `ct2a_mom1d`, `a=[0, 0.04]`, no effective TI, LinearSum), `fugamultilut` (two LUTs),
+  `noj`, `bastankhah`, `niayifar` (Gaussian with CrespoHernandez added turbulence), `fuga`. Farms: `hr1`
   (Horns Rev 1, 360 wd x 23 ws), `grid400` (400 WTGs of two types, 72 wd x 22 ws), `aligned100`
   (100 WTGs on an exact grid, 24 wd including the grid axes, so turbines sit exactly side by side)
   and `grid1000` (1000 WTGs, 12 wd, not in the default matrix).
