@@ -12,6 +12,8 @@ python bench/identity.py save --root . --out head
 python bench/identity.py compare ref-master head
 
 python bench/speed.py --base ../pywake-master --head . --pairs 5 --out speed.json
+python bench/speed.py --base ../pywake-master --head . --pairs 3 --max-rss 16 --cases turbopark-scale2000
+python bench/waterfall.py --repo . --commits master master..performance --workdir ../waterfall --cases turbopark-grid400
 python bench/profile_case.py --root . --case turbopark-grid400
 ```
 
@@ -22,11 +24,20 @@ python bench/profile_case.py --root . --case turbopark-grid400
   is loaded, since load only adds time), the peak RSS of the process and the extra CPU time of the
   first run (numba compilation). Each run starts after `gc.collect()`: py_wake results sit in
   reference cycles, so without it the previous run's arrays can survive into the next run and
-  inflate its peak memory by an amount that depends on garbage-collector timing.
+  inflate its peak memory by an amount that depends on garbage-collector timing. A run is killed and
+  reported as `killed` when it exceeds `--timeout` or `--max-rss`, or when the whole system has less
+  than `--min-available` GB available (default 2, `0` disables it); its row still shows the RSS
+  reached and the side is not run again for that case. With `--runs 1` the timed run includes numba
+  compilation. The JSON output records both checkouts and the machine.
+- `waterfall.py` times a sequence of commits the same way, alternating their order between pairs,
+  and reports the fastest-run ratio against the first commit. Ranges expand to the first-parent
+  commits that change library code under `py_wake/`, outside the tests; each commit is checked out
+  once as a detached worktree under `--workdir` (remove them with `git worktree remove`).
 - Cases are `<model>-<farm>`. Models: `turbopark` (`Nygaard_2022`: TurboGaussian, Mirror, Gaussian
   overlap, SquaredSum, deficit scaled with the downstream ambient speed), `nojlocal` (`NOJLocalDeficit`
   with area overlap, `ct2a_mom1d`, `a=[0, 0.04]`, no effective TI, LinearSum), `fugamultilut` (two LUTs),
   `noj`, `bastankhah`, `niayifar` (Gaussian with CrespoHernandez added turbulence), `fuga`. Farms: `hr1`
   (Horns Rev 1, 360 wd x 23 ws), `grid400` (400 WTGs of two types, 72 wd x 22 ws), `aligned100`
   (100 WTGs on an exact grid, 24 wd including the grid axes, so turbines sit exactly side by side)
-  and `grid1000` (1000 WTGs, 12 wd, not in the default matrix).
+  and, outside the default matrix, `scale<N>` (N WTGs laid out like `grid400`, same 72 wd x 22 ws;
+  `scale400` is `grid400`) and `scale<N>c<k>` (the same farm run with `wd_chunks=k`).
