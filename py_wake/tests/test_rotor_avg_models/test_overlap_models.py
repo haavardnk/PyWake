@@ -539,7 +539,7 @@ area_rows = (area_rng.uniform(20, 120, (3, 37, 6, 5)), area_rng.uniform(20, 80, 
 
 @pytest.mark.parametrize('R1,R2,d,fast', [
     pytest.param(area_R1, area_R2, area_d, 1, id='niayifar'),
-    pytest.param(area_R1[..., :1].copy(), area_R2, area_d, 1, id='park2'),
+    pytest.param(area_R1[..., :1].copy(), area_R2, area_d, 1, id='noj_local'),
     pytest.param(*area_rows, 1, id='all2all'),
     pytest.param(*area_edges, 1, id='edges'),
     pytest.param(np.reshape(area_values, (1, 14, 1, 1)), np.reshape(area_values, (1, 1, 14, 1)),

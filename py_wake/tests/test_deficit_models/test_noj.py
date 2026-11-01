@@ -288,7 +288,7 @@ def _stock_noj(monkeypatch):
     pytest.param(NOJDeficit(groundModel=Mirror()), SquaredSum(), None, True, id='NOJ_mirror'),
     pytest.param(NOJDeficit(rotorAvgModel=GridRotorAvg()), SquaredSum(), None, False, id='NOJ_grid_rotor_avg'),
     pytest.param(NOJLocalDeficit(ct2a=ct2a_mom1d, a=[0, .04], use_effective_ti=False), LinearSum(), None, True,
-                 id='park2'),
+                 id='NOJLocal'),
     pytest.param(NOJLocalDeficit(), LinearSum(), STF2017TurbulenceModel(), False, id='NOJLocal_ti_eff')])
 def test_noj_deficit_wfm(wfm_cls, deficit, superposition, turbulence, kernel, monkeypatch):
     site = Hornsrev1Site()
