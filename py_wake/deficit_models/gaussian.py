@@ -474,15 +474,19 @@ class ZongGaussian(PropagateDownwind, DeprecatedModel):
 
 def _turbo_expansion_terms(dw, D, alpha, beta, term2, term1, ratio):
     I, J, L, K = term1.shape
+    # a zero k stride on dw blocks vectorisation, an explicit k index of 0 does not
+    k_step = dw.shape[3] > 1
     for i in range(I):
         for j in range(J):
             for l in range(L):
                 for k in range(K):
-                    ijlk = i, j, l, k
-                    u = alpha[ijlk] + beta[ijlk] * dw[ijlk] / D[ijlk]
-                    term1[ijlk] = numpy.sqrt(u * u + 1)
-                    ratio[ijlk] = (term1[ijlk] + 1) * alpha[ijlk] / \
-                        ((term2[ijlk] + 1) * (alpha[ijlk] + beta[ijlk] * abs(dw[ijlk]) / D[ijlk]))
+                    beta_dw_D = beta[i, l, k] * dw[i, j, l, k * k_step] / D[i, l]
+                    u = alpha[i, l, k] + beta_dw_D
+                    term1_ijlk = numpy.sqrt(u * u + 1)
+                    term1[i, j, l, k] = term1_ijlk
+                    # beta and D are positive, so abs(beta * dw / D) is beta * abs(dw) / D
+                    ratio[i, j, l, k] = (term1_ijlk + 1) * alpha[i, l, k] / \
+                        ((term2[i, l, k] + 1) * (alpha[i, l, k] + abs(beta_dw_D)))
 
 
 def _turbo_sigma(fac, term2, log_ratio, epsilon_D, term1_sigma):
@@ -492,36 +496,44 @@ def _turbo_sigma(fac, term2, log_ratio, epsilon_D, term1_sigma):
         for j in range(J):
             for l in range(L):
                 for k in range(K):
-                    ijlk = i, j, l, k
-                    term1_sigma[ijlk] = fac[ijlk] * (term1_sigma[ijlk] - term2[ijlk] - log_ratio[ijlk]) + epsilon_D[ijlk]
-                    nan |= term1_sigma[ijlk] != term1_sigma[ijlk]
+                    sigma = fac[i, l, k] * (term1_sigma[i, j, l, k] - term2[i, l, k] - log_ratio[i, j, l, k]) + \
+                        epsilon_D[i, l, k]
+                    term1_sigma[i, j, l, k] = sigma
+                    nan |= sigma != sigma
     return nan
 
 
 @functools.lru_cache
 def _turbo_kernels():
-    inputs = numba.types.Array(numba.float64, 4, 'A', readonly=True)
-    outputs = numba.float64[:, :, :, ::1]
-    return (numba.njit(numba.void(inputs, inputs, inputs, inputs, inputs, outputs, outputs),
+    ilk_in = numba.types.Array(numba.float64, 3, 'C', readonly=True)
+    il_in = numba.types.Array(numba.float64, 2, 'C', readonly=True)
+    ijlk_in = numba.types.Array(numba.float64, 4, 'A', readonly=True)
+    ijlk_out = numba.float64[:, :, :, ::1]
+    return (numba.njit(numba.void(ijlk_in, il_in, ilk_in, ilk_in, ilk_in, ijlk_out, ijlk_out),
                        error_model='numpy')(_turbo_expansion_terms),
-            numba.njit(numba.boolean(inputs, inputs, outputs, inputs, outputs), error_model='numpy')(_turbo_sigma))
+            numba.njit(numba.boolean(ilk_in, ilk_in, ijlk_out, ilk_in, ijlk_out), error_model='numpy')(_turbo_sigma))
 
 
-def _compiled_turbo_sigma(dw_ijlk, D_src_ijlk, alpha_ijlk, beta_ijlk, term2_ijlk, fac_ijlk, epsilon_D_ijlk):
-    inputs = dw_ijlk, D_src_ijlk, alpha_ijlk, beta_ijlk, term2_ijlk, fac_ijlk, epsilon_D_ijlk
-    if not all(type(x) is numpy.ndarray and x.dtype == numpy.float64 for x in inputs):
+def _compiled_turbo_sigma(dw_ijlk, D_src_il, alpha_ilk, beta_ilk, term2_ilk, fac_ilk, epsilon_D_ilk):
+    ilk_arrays = alpha_ilk, beta_ilk, term2_ilk, fac_ilk, epsilon_D_ilk
+    arrays = (dw_ijlk, D_src_il) + ilk_arrays
+    if any(type(x) is not numpy.ndarray or x.dtype != numpy.float64 for x in arrays) or \
+            [x.ndim for x in arrays] != [4, 2, 3, 3, 3, 3, 3]:
         return None
-    shape = numpy.broadcast_shapes(*[x.shape for x in inputs])
-    if len(shape) != 4:
+    shape = numpy.broadcast_shapes(dw_ijlk.shape, D_src_il[:, na, :, na].shape, *[x[:, na].shape for x in ilk_arrays])
+    I, J, L, K = shape
+    dw_ijlk = numpy.broadcast_to(dw_ijlk, (I, J, L, dw_ijlk.shape[3]))
+    D_src_il = numpy.ascontiguousarray(numpy.broadcast_to(D_src_il, (I, L)))
+    alpha_ilk, beta_ilk, term2_ilk, fac_ilk, epsilon_D_ilk = \
+        [numpy.ascontiguousarray(numpy.broadcast_to(x, (I, L, K))) for x in ilk_arrays]
+    if not ((beta_ilk > 0).all() and (D_src_il > 0).all()):
         return None
-    dw_ijlk, D_src_ijlk, alpha_ijlk, beta_ijlk, term2_ijlk, fac_ijlk, epsilon_D_ijlk = \
-        [numpy.broadcast_to(x, shape) for x in inputs]
     expansion_kernel, sigma_kernel = _turbo_kernels()
     term1_sigma_ijlk, log_ratio_ijlk = numpy.empty(shape), numpy.empty(shape)
-    expansion_kernel(dw_ijlk, D_src_ijlk, alpha_ijlk, beta_ijlk, term2_ijlk, term1_sigma_ijlk, log_ratio_ijlk)
+    expansion_kernel(dw_ijlk, D_src_il, alpha_ilk, beta_ilk, term2_ilk, term1_sigma_ijlk, log_ratio_ijlk)
     numpy.log(log_ratio_ijlk, out=log_ratio_ijlk)
     # NaN sign bits depend on operand order, which LLVM may commute
-    if sigma_kernel(fac_ijlk, term2_ijlk, log_ratio_ijlk, epsilon_D_ijlk, term1_sigma_ijlk):
+    if sigma_kernel(fac_ilk, term2_ilk, log_ratio_ijlk, epsilon_D_ilk, term1_sigma_ijlk):
         return None
     return term1_sigma_ijlk
 
@@ -562,8 +574,7 @@ class TurboGaussianDeficit(NiayifarGaussianDeficit):
         fac_ilk = self.A * TI_ref_ilk * D_src_il[..., na] / beta_ilk
         term2_ilk = np.sqrt(1 + alpha_ilk**2)
         epsilon_D_ilk = self.epsilon_ilk(ct_ilk) * D_src_il[..., na]
-        sigma_ijlk = _compiled_turbo_sigma(dw_ijlk, D_src_il[:, na, :, na], alpha_ilk[:, na], beta_ilk[:, na],
-                                           term2_ilk[:, na], fac_ilk[:, na], epsilon_D_ilk[:, na])
+        sigma_ijlk = _compiled_turbo_sigma(dw_ijlk, D_src_il, alpha_ilk, beta_ilk, term2_ilk, fac_ilk, epsilon_D_ilk)
         if sigma_ijlk is not None:
             return sigma_ijlk
         term1_ijlk = np.sqrt((alpha_ilk[:, na] + beta_ilk[:, na] * dw_ijlk / D_src_il[:, na, :, na])**2 + 1)
