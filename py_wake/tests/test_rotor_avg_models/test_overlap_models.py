@@ -230,6 +230,21 @@ def test_calc_deficit_centre_non_finite(cw):
     assert np.broadcast_to(actual, expected.shape).tobytes() == expected.tobytes()
 
 
+@pytest.mark.parametrize('dtype,WS', [(np.float64, np.inf + 0j), (np.float64, np.nan + 0j), (np.complex128, np.inf),
+                                      (np.float32, 10.)])
+def test_calc_deficit_centre_dtype(dtype, WS):
+    kwargs = dict(D_src_il=np.array([[80., 120.]], dtype), dw_ijlk=np.array([200., 400.], dtype)[na, :, na, na],
+                  ct_ilk=np.array([.8, .5], dtype)[na, :, na], TI_ilk=np.full((1, 2, 1), .06, dtype),
+                  WS_ref_ijlk=np.array([WS, 10.], np.result_type(dtype, WS))[na, na, :, na])
+    cw_ijlk = np.array([[30., -50.]])[..., na, na]
+    deficitModel = TurboGaussianDeficit(ct2a=ct2a_mom1d)
+    with np.errstate(all='ignore'):
+        expected = deficitModel.calc_deficit(cw_ijlk=cw_ijlk * 0, **kwargs)
+        actual = deficitModel._calc_deficit_centre(deficitModel.sigma_ijlk(**kwargs), cw_ijlk=cw_ijlk, **kwargs)
+    assert actual.dtype == expected.dtype
+    assert actual.tobytes() == expected.tobytes()
+
+
 @pytest.mark.parametrize('dcw', [0, 1e-20j])
 def test_calc_deficit_centre_skips_unit_exponential(dcw, monkeypatch):
     kwargs = dict(D_src_il=np.array([[80., 120.]]), dw_ijlk=np.array([200., 400.])[na, :, na, na],
