@@ -1,3 +1,4 @@
+import re
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -109,15 +110,25 @@ class Case:
 FARMS = {
     "hr1": lambda: (HornsrevV80(), hornsrev1()),
     "grid400": lambda: (two_types(), grid(400, 5)),
-    "grid1000": lambda: (two_types(), grid(1000, 30)),
     "aligned100": lambda: (two_types(), grid(100, 15, jitter=0.0)),
 }
+SCALE = re.compile(r"scale([1-9]\d*)(?:c([1-9]\d*))?")
+
+
+def farm(name):
+    if name in FARMS:
+        return FARMS[name]()
+    match = SCALE.fullmatch(name)
+    if match is None:
+        raise KeyError(f"unknown farm {name}")
+    n_wtg, wd_chunks = match.groups()
+    return two_types(), grid(int(n_wtg), 5, wd_chunks=int(wd_chunks) if wd_chunks else None)
 
 
 def case(name):
-    model, farm = name.split("-")
-    wind_turbines, layout = FARMS[farm]()
-    return Case(model, farm, Hornsrev1Site(), wind_turbines, layout)
+    model, farm_name = name.split("-")
+    wind_turbines, layout = farm(farm_name)
+    return Case(model, farm_name, Hornsrev1Site(), wind_turbines, layout)
 
 
 def outputs(sim_res):

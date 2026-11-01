@@ -1,4 +1,5 @@
 import os
+import platform
 import subprocess
 import sys
 
@@ -42,4 +43,27 @@ def describe(root):
         "scipy": scipy.__version__,
         "xarray": xarray.__version__,
         "platform": sys.platform,
+    }
+
+
+def cpu_name():
+    if sys.platform == "darwin":
+        return subprocess.run(
+            ["sysctl", "-n", "machdep.cpu.brand_string"], capture_output=True, text=True, check=True
+        ).stdout.strip()
+    with open("/proc/cpuinfo") as fid:
+        return next(
+            (line.split(":", 1)[1].strip() for line in fid if line.startswith("model name")), platform.machine()
+        )
+
+
+def machine():
+    import psutil
+
+    return {
+        "cpu": cpu_name(),
+        "cores": os.cpu_count(),
+        "memory_gb": psutil.virtual_memory().total / 1e9,
+        "platform": platform.platform(),
+        "load": os.getloadavg(),
     }
