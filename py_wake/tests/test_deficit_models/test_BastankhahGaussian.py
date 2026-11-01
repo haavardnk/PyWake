@@ -228,3 +228,171 @@ def test_deficit_centre_kernel_gradients(gradient_method, fast, monkeypatch):
         npt.assert_array_almost_equal(gradients, get_gradients(), 15)
     else:
         npt.assert_array_equal(gradients, get_gradients())
+
+
+def _stock_sigma_ijlk(self, D_src_il, dw_ijlk, ct_ilk, **kwargs):
+    return self.k_ilk(**kwargs)[:, na] * dw_ijlk + self.epsilon_ilk(ct_ilk, **kwargs)[:, na] * D_src_il[:, na, :, na]
+
+
+def _spy_sigma_kernel(monkeypatch):
+    build, outputs = gaussian._linear_sigma_kernel, []
+
+    def spy_kernel():
+        kernel = build()
+
+        def spy(*args):
+            outputs.append(args[-1])
+            return kernel(*args)
+        return spy
+    monkeypatch.setattr(gaussian, '_linear_sigma_kernel', spy_kernel)
+    return outputs
+
+
+def _sigma_inputs(I, J, L, K, dw_k=1):
+    rng = np.random.default_rng([I, J, L, K, dw_k])
+    dw_ijlk = rng.uniform(-2000., 5000., (I, J, L, dw_k))
+    dw_ijlk.reshape(-1)[:10] = [-0., 0., 5e-324, -5e-324, 1e308, -1e308, np.inf, -np.inf, 1e-300, -np.inf][:dw_ijlk.size]
+    D_src_il = rng.choice([80., 120., 0.], (I, L))
+    D_src_il[0, min(1, L - 1)] = np.inf
+    TI_eff_ilk = rng.uniform(.02, .3, (I, L, K))
+    TI_eff_ilk[0, 0, :2] = [-.003678 / .3837, 0.][:K]
+    return dict(D_src_il=D_src_il, dw_ijlk=dw_ijlk, ct_ilk=rng.uniform(0., 1.2, (I, L, K)),
+                TI_ilk=np.full((I, L, 1), .06), TI_eff_ilk=TI_eff_ilk)
+
+
+sigma_base = _sigma_inputs(1, 37, 3, 5)
+sigma_dw = sigma_base['dw_ijlk']
+
+
+@pytest.mark.parametrize('kwargs,fast', [
+    pytest.param(sigma_base, True, id='niayifar'),
+    pytest.param(_sigma_inputs(3, 37, 2, 5), True, id='all2all'),
+    pytest.param(_sigma_inputs(1, 37, 3, 5, dw_k=5), True, id='dw_with_k'),
+    pytest.param(_sigma_inputs(2, 7, 1, 1), True, id='one_case'),
+    pytest.param(_with(sigma_base, dw_ijlk=sigma_dw[:, :0]), True, id='empty'),
+    pytest.param(_with(sigma_base, dw_ijlk=np.broadcast_to(sigma_dw, sigma_dw.shape)), True, id='readonly_dw'),
+    pytest.param(_with(_sigma_inputs(3, 37, 2, 5), dw_ijlk=_sigma_inputs(1, 37, 2, 5)['dw_ijlk']), True, id='broadcast_dw'),
+    pytest.param(_with(sigma_base, TI_eff_ilk=sigma_base['TI_eff_ilk'].astype(np.float32)), True, id='float32_TI'),
+    pytest.param(_with(sigma_base, D_src_il=sigma_base['D_src_il'][:, :1]), True, id='broadcast_D'),
+    pytest.param(_with(sigma_base, dw_ijlk=_set(sigma_dw, (0, 20, 1, 0), np.nan)), False, id='nan_dw'),
+    pytest.param(_with(sigma_base, dw_ijlk=_set(sigma_dw, (0, 20, 1, 0), -np.nan)), False, id='negative_nan_dw'),
+    pytest.param(_with(sigma_base, TI_eff_ilk=_set(sigma_base['TI_eff_ilk'], (0, 2, 4), np.nan)), False, id='nan_TI'),
+    pytest.param(_with(sigma_base, ct_ilk=_set(sigma_base['ct_ilk'], (0, 2, 4), np.nan)), False, id='nan_ct'),
+    pytest.param(_with(sigma_base, D_src_il=_set(sigma_base['D_src_il'], (0, 1), np.nan)), False, id='nan_D'),
+    pytest.param(_with(sigma_base, dw_ijlk=_set(sigma_dw, (0, 20, 1, 0), -np.nan),
+                       D_src_il=_set(sigma_base['D_src_il'], (0, 1), np.nan)), False, id='nan_dw_and_D'),
+    pytest.param(_with(sigma_base, dw_ijlk=sigma_dw + 0j), False, id='complex_dw'),
+    pytest.param(_with(sigma_base, ct_ilk=sigma_base['ct_ilk'] + 0j), False, id='complex_ct'),
+    pytest.param(_with(sigma_base, TI_eff_ilk=sigma_base['TI_eff_ilk'] + 0j), False, id='complex_TI'),
+    pytest.param(_with(sigma_base, dw_ijlk=sigma_dw.astype(np.float32)), False, id='float32_dw'),
+    pytest.param(_with(sigma_base, D_src_il=sigma_base['D_src_il'].astype(np.float32)), False, id='float32_D'),
+    pytest.param(_with(sigma_base, dw_ijlk=np.asfortranarray(_sigma_inputs(1, 37, 3, 5, dw_k=5)['dw_ijlk'])), False,
+                 id='fortran_dw'),
+    pytest.param(_with(sigma_base, dw_ijlk=np.repeat(sigma_dw, 2, 1)[:, ::2]), False, id='strided_dw'),
+    pytest.param(_with(sigma_base, TI_eff_ilk=np.asfortranarray(sigma_base['TI_eff_ilk']),
+                       ct_ilk=np.asfortranarray(sigma_base['ct_ilk'])), False, id='fortran_TI_ct'),
+    pytest.param(_with(sigma_base, D_src_il=np.asfortranarray(np.repeat(sigma_base['D_src_il'], 2, 0))), False,
+                 id='fortran_D'),
+    pytest.param(_with(sigma_base, dw_ijlk=sigma_dw.astype('>f8')), False, id='big_endian_dw'),
+    pytest.param(_with(sigma_base, dw_ijlk=sigma_dw.view(SubArray)), False, id='subclass_dw'),
+    pytest.param(_with(sigma_base, D_src_il=sigma_base['D_src_il'].view(SubArray)), False, id='subclass_D'),
+    pytest.param(_with(sigma_base, TI_eff_ilk=sigma_base['TI_eff_ilk'].view(SubArray)), False, id='subclass_TI'),
+    pytest.param(_with(sigma_base, dw_ijlk=sigma_dw[..., na]), False, id='five_d_dw'),
+    pytest.param(_with(sigma_base, D_src_il=sigma_base['D_src_il'][0]), False, id='one_d_D'),
+    pytest.param(_with(sigma_base, D_src_il=np.full((1, 1, 1), 80.)), False, id='three_d_D'),
+    pytest.param(_with(sigma_base, TI_eff_ilk=sigma_base['TI_eff_ilk'][:, :, 0]), False, id='two_d_TI')])
+@pytest.mark.filterwarnings('ignore::RuntimeWarning')
+def test_linear_sigma_kernel(kwargs, fast, monkeypatch):
+    outputs = _spy_sigma_kernel(monkeypatch)
+    deficitModel = NiayifarGaussianDeficit(a=[0.3837, 0.003678])
+    try:
+        expected = _stock_sigma_ijlk(deficitModel, **kwargs)
+    except (ValueError, IndexError) as e:
+        with pytest.raises(type(e)):
+            deficitModel.sigma_ijlk(**kwargs)
+        assert outputs == []
+        return
+    actual = deficitModel.sigma_ijlk(**kwargs)
+    assert len(outputs) == fast
+    assert (fast and actual is outputs[0]) or not fast
+    assert type(actual) is type(expected)
+    assert actual.dtype == expected.dtype
+    assert (actual.shape, actual.strides) == (expected.shape, expected.strides)
+    assert actual.tobytes() == expected.tobytes()
+
+
+def test_linear_sigma_kernel_inputs_cover_edges():
+    with np.errstate(all='ignore'):
+        sigma = _stock_sigma_ijlk(NiayifarGaussianDeficit(a=[0.3837, 0.003678]), **sigma_base)
+    assert np.isnan(sigma).any() and np.isposinf(sigma).any() and np.isneginf(sigma).any()
+    assert (sigma == 0).any() and (np.abs(sigma) < np.finfo(float).tiny).any() and (sigma < 0).any()
+
+
+@pytest.mark.filterwarnings('ignore::RuntimeWarning')
+def test_linear_sigma_kernel_numpy32(monkeypatch):
+    outputs = _spy_sigma_kernel(monkeypatch)
+    deficitModel = NiayifarGaussianDeficit()
+    with Numpy32():
+        actual = deficitModel.sigma_ijlk(**sigma_base)
+        expected = _stock_sigma_ijlk(deficitModel, **sigma_base)
+    assert outputs == []
+    assert actual.dtype == expected.dtype
+    assert actual.tobytes() == expected.tobytes()
+
+
+@pytest.mark.parametrize('deficitModel,fast', [
+    (NiayifarGaussianDeficit(), True),
+    (NiayifarGaussianDeficit(a=[0, 4e-3]), True),
+    (NiayifarGaussianDeficit(a=[0, 0]), False),
+    (BastankhahGaussianDeficit(), True),
+    (BastankhahGaussianDeficit(k=0), False),
+    (CarbajofuertesGaussianDeficit(), True),
+    (TurboGaussianDeficit(), False),
+    (ZongGaussianDeficit(), False)])
+def test_linear_sigma_kernel_models(deficitModel, fast, monkeypatch):
+    rng = np.random.default_rng(4)
+    kwargs = dict(D_src_il=np.array([[80., 120., 100.]]), dw_ijlk=rng.uniform(-500., 2000., (1, 37, 3, 1)),
+                  ct_ilk=rng.uniform(0., 1., (1, 3, 5)), TI_ilk=np.full((1, 3, 1), .06),
+                  TI_eff_ilk=rng.uniform(.06, .2, (1, 3, 5)), WS_ilk=np.full((1, 3, 5), 10.),
+                  WS_eff_ilk=rng.uniform(4., 25., (1, 3, 5)))
+    outputs = _spy_sigma_kernel(monkeypatch)
+    actual = deficitModel.sigma_ijlk(**kwargs)
+    assert (len(outputs) == 1 and actual is outputs[0]) == fast
+    monkeypatch.setattr(BastankhahGaussianDeficit, 'sigma_ijlk', _stock_sigma_ijlk)
+    expected = deficitModel.sigma_ijlk(**kwargs)
+    assert (actual.dtype, actual.shape, actual.strides) == (expected.dtype, expected.shape, expected.strides)
+    assert actual.tobytes() == expected.tobytes()
+
+
+@pytest.mark.parametrize('wfm_cls', [PropagateDownwind, All2AllIterative])
+@pytest.mark.parametrize('deficitModel', [NiayifarGaussianDeficit, BastankhahGaussianDeficit, CarbajofuertesGaussianDeficit])
+def test_linear_sigma_kernel_wfm(wfm_cls, deficitModel, monkeypatch):
+    wfm = wfm_cls(Hornsrev1Site(), V80(), deficitModel(ct2a=ct2a_mom1d, rotorAvgModel=GaussianOverlapAvgModel()),
+                  superpositionModel=LinearSum(), turbulenceModel=CrespoHernandez(ct2a=ct2a_mom1d))
+    x, y = wfm.site.initial_position.T
+
+    def run():
+        sim_res = wfm(x, y, wd=np.arange(0, 360, 30), ws=[6, 8])
+        return sim_res, sim_res.flow_map(XYGrid(resolution=20), wd=270, ws=8)
+    outputs = _spy_sigma_kernel(monkeypatch)
+    sim_res, flow_map = run()
+    assert len(outputs) > 0
+    monkeypatch.setattr(BastankhahGaussianDeficit, 'sigma_ijlk', _stock_sigma_ijlk)
+    ref, ref_flow_map = run()
+    for k in ['WS_eff', 'TI_eff', 'CT', 'Power']:
+        assert sim_res[k].values.tobytes() == ref[k].values.tobytes()
+    assert flow_map.WS_eff.values.tobytes() == ref_flow_map.WS_eff.values.tobytes()
+
+
+@pytest.mark.parametrize('gradient_method,fast', [(autograd, False), (cs, False), (fd, True)])
+def test_linear_sigma_kernel_gradients(gradient_method, fast, monkeypatch):
+    x, y = np.array([0., 400, 800]), np.array([0., 50, -30])
+    wfm = _overlap_wfm(PropagateDownwind, 'niayifar')
+
+    def get_gradients():
+        return wfm.aep_gradients(gradient_method, ['x', 'y'], x=x, y=y, wd=[260, 270, 280], ws=[6, 10])
+    outputs = _spy_sigma_kernel(monkeypatch)
+    gradients = get_gradients()
+    assert (len(outputs) > 0) == fast
+    monkeypatch.setattr(BastankhahGaussianDeficit, 'sigma_ijlk', _stock_sigma_ijlk)
+    npt.assert_array_equal(gradients, get_gradients())
