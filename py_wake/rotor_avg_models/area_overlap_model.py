@@ -1,9 +1,72 @@
+import functools
+import numba
+import numpy
 from py_wake.rotor_avg_models.rotor_avg_model import RotorAvgModel
 from py_wake import np
 from numpy import newaxis as na
 from py_wake.utils.gradients import cabs
 from autograd.numpy.numpy_boxes import ArrayBox
 from py_wake.deficit_models.deficit_model import WakeRadiusTopHat
+
+
+def _classify_overlap_loop(R1, R2, d, A_ol_f, index):
+    I, J, L, K = A_ol_f.shape
+    n = 0
+    for i in range(I):
+        for j in range(J):
+            for l in range(L):
+                for k in range(K):
+                    r1, r2, dist = R1[i, j, l, k], R2[i, j, l, k], d[i, j, l, k]
+                    Rmax, Rmin = (r2, r1) if r1 < r2 else (r1, r2)
+                    A_ol_f[i, j, l, k] = 1. if dist <= Rmax - Rmin else 0.
+                    if dist > Rmax - Rmin and dist < Rmin + Rmax:
+                        index[n] = ((i * J + j) * L + l) * K + k
+                        n += 1
+    return n
+
+
+@functools.lru_cache
+def _classify_overlap_kernel():
+    inputs = numba.types.Array(numba.float64, 4, 'A', readonly=True)
+    return numba.njit(numba.int64(inputs, inputs, inputs, numba.float64[:, :, :, ::1], numba.int64[::1]),
+                      error_model='numpy')(_classify_overlap_loop)
+
+
+def _compiled_overlapping_area_factor(R1, R2, d, shape):
+    if not (np.backend is numpy and len(shape) == 4 and
+            all(type(x) is numpy.ndarray and x.dtype == numpy.float64 and x.flags.c_contiguous for x in [R1, R2, d])):
+        return None
+    R1, R2, d = [numpy.broadcast_to(a, shape) for a in [R1, R2, d]]
+    A_ol_f, index = numpy.empty(shape), numpy.empty(numpy.prod(shape, dtype=numpy.int64), dtype=numpy.int64)
+    index = index[:_classify_overlap_kernel()(R1, R2, d, A_ol_f, index)]
+    R1, R2, d = [a[numpy.unravel_index(index, shape)] for a in [R1, R2, d]]
+    Rmax, Rmin = numpy.where(R1 < R2, R2, R1), numpy.where(R1 < R2, R1, R2)
+    A_ol_f.reshape(-1)[index] = _partial_overlap_factor(Rmax, Rmin, d, R1, R2, slice(None))
+    return A_ol_f
+
+
+def _partial_overlap_factor(Rmax, Rmin, d, R1, R2, mask):
+    # in somecases cos_alpha or cos_beta can be larger than 1 or less than
+    # -1.0, cause problem to arccos(), resulting nan values, here fix this
+    # issue.
+    eps = 2 * np.finfo(float).eps
+
+    def arccos_lim(x):
+        return np.arccos((np.clip(x, -1.0 + eps, +1.0 - eps)))  # eps to avoid inf in gradient
+
+    alpha = arccos_lim((Rmax[mask]**2.0 + d[mask]**2 - Rmin[mask]**2) /
+                       (2.0 * np.maximum(Rmax[mask] * d[mask], eps)))
+
+    beta = arccos_lim((Rmin[mask]**2.0 + d[mask]**2 - Rmax[mask]**2) /
+                      (2.0 * np.maximum(Rmin[mask] * d[mask], eps)))
+
+    # p = (R1[mask] + R2[mask] + d[mask]) / 2.0
+    # A_triangle = 2 * np.sqrt(gradients.cabs(p * (p - Rmin[mask]) *
+    #                                         (p - Rmax[mask]) * (p - d[mask])))
+    A_triangle = np.sin(alpha) * R1[mask] * d[mask]
+
+    return np.maximum((alpha * Rmax[mask]**2 + beta * Rmin[mask]**2 -
+                       A_triangle) / (R2[mask]**2 * np.pi), 0)  # maximum to avoid <0 due to numerical inaccuracy
 
 
 class AreaOverlapAvgModel(RotorAvgModel):
@@ -82,6 +145,9 @@ class AreaOverlapAvgModel(RotorAvgModel):
         """
         # treat all input as array
         shape = tuple(np.max([R1.shape, R2.shape, d.shape], 0))
+        A_ol_f = _compiled_overlapping_area_factor(R1, R2, d, shape)
+        if A_ol_f is not None:
+            return A_ol_f
         R1, R2, d = [np.broadcast_to(a, shape) for a in [R1, R2, d]]
 
         # make sure R_big >= R_small
@@ -101,27 +167,7 @@ class AreaOverlapAvgModel(RotorAvgModel):
         else:
             p_wake_mask = None
 
-        # in somecases cos_alpha or cos_beta can be larger than 1 or less than
-        # -1.0, cause problem to arccos(), resulting nan values, here fix this
-        # issue.
-        eps = 2 * np.finfo(float).eps
-
-        def arccos_lim(x):
-            return np.arccos((np.clip(x, -1.0 + eps, +1.0 - eps)))  # eps to avoid inf in gradient
-
-        alpha = arccos_lim((Rmax[mask]**2.0 + d[mask]**2 - Rmin[mask]**2) /
-                           (2.0 * np.maximum(Rmax[mask] * d[mask], eps)))
-
-        beta = arccos_lim((Rmin[mask]**2.0 + d[mask]**2 - Rmax[mask]**2) /
-                          (2.0 * np.maximum(Rmin[mask] * d[mask], eps)))
-
-        # p = (R1[mask] + R2[mask] + d[mask]) / 2.0
-        # A_triangle = 2 * np.sqrt(gradients.cabs(p * (p - Rmin[mask]) *
-        #                                         (p - Rmax[mask]) * (p - d[mask])))
-        A_triangle = np.sin(alpha) * R1[mask] * d[mask]
-
-        p_wake_f = np.maximum((alpha * Rmax[mask]**2 + beta * Rmin[mask]**2 -
-                               A_triangle) / (R2[mask]**2 * np.pi), 0)  # maximum to avoid <0 due to numerical inaccuracy
+        p_wake_f = _partial_overlap_factor(Rmax, Rmin, d, R1, R2, mask)
 
         if p_wake_mask is None:
             A_ol_f[mask] = p_wake_f
