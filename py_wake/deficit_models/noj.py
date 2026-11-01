@@ -1,3 +1,6 @@
+import functools
+import numba
+import numpy
 from numpy import newaxis as na
 from py_wake import np
 from py_wake.superposition_models import SquaredSum, LinearSum
@@ -13,6 +16,40 @@ from py_wake.deficit_models.utils import ct2a_madsen
 from py_wake.utils.model_utils import DeprecatedModel
 
 
+def _noj_deficit_loop(term_numerator_ilk, WS_ref_ilk, ratio_ijl, deficit_ijlk):
+    I, J, L, K = deficit_ijlk.shape
+    for i in range(I):
+        for j in range(J):
+            for l in range(L):
+                ratio = ratio_ijl[i, j, l]
+                numerator_k, WS_k, deficit_k = term_numerator_ilk[i, l], WS_ref_ilk[i, l], deficit_ijlk[i, j, l]
+                for k in range(K):
+                    deficit_k[k] = numerator_k[k] * (WS_k[k] * ratio)
+
+
+@functools.lru_cache
+def _noj_deficit_kernel():
+    ilk = numba.types.Array(numba.float64, 3, 'C', readonly=True)
+    ijl = numba.types.Array(numba.float64, 3, 'A', readonly=True)
+    return numba.njit(numba.void(ilk, ilk, ijl, numba.float64[:, :, :, ::1]), error_model='numpy')(_noj_deficit_loop)
+
+
+def _noj_deficit(term_numerator_ilk, WS_ref_ilk, ratio_ijlk):
+    inputs = term_numerator_ilk, WS_ref_ilk, ratio_ijlk
+    if (all(type(x) is numpy.ndarray and x.dtype == numpy.float64 and x.flags.c_contiguous for x in inputs) and
+            term_numerator_ilk.ndim == WS_ref_ilk.ndim == 3 and ratio_ijlk.ndim == 4 and ratio_ijlk.shape[3] == 1):
+        I, J, L, K = shape = numpy.broadcast_shapes(term_numerator_ilk[:, na].shape, WS_ref_ilk[:, na].shape,
+                                                    ratio_ijlk.shape)
+        # with no NaN input, operand order cannot change a NaN payload
+        if K > 1 and I * J * L * K >= 2**14 and not any(numpy.isnan(x).any() for x in inputs):
+            deficit_ijlk = numpy.empty(shape)
+            _noj_deficit_kernel()(numpy.ascontiguousarray(numpy.broadcast_to(term_numerator_ilk, (I, L, K))),
+                                  numpy.ascontiguousarray(numpy.broadcast_to(WS_ref_ilk, (I, L, K))),
+                                  numpy.broadcast_to(ratio_ijlk[..., 0], (I, J, L)), deficit_ijlk)
+            return deficit_ijlk
+    return term_numerator_ilk[:, na] * (WS_ref_ilk[:, na] * ratio_ijlk)
+
+
 class NOJDeficit(NiayifarGaussianDeficit, WakeRadiusTopHat):
 
     def __init__(self, ct2a=ct2a_madsen, k=.1, rotorAvgModel=AreaOverlapAvgModel(), groundModel=None):
@@ -22,7 +59,10 @@ class NOJDeficit(NiayifarGaussianDeficit, WakeRadiusTopHat):
         self.ct2a = ct2a
 
     def _calc_layout_terms(self, D_src_il, wake_radius_ijl, dw_ijlk, cw_ijlk, **kwargs):
-        WS_ref_ilk = kwargs[self.WS_key]
+        ratio_ijlk = self._in_wake_ratio_ijlk(D_src_il, wake_radius_ijl, dw_ijlk, cw_ijlk)
+        self.layout_factor_ijlk = kwargs[self.WS_key][:, na] * ratio_ijlk
+
+    def _in_wake_ratio_ijlk(self, D_src_il, wake_radius_ijl, dw_ijlk, cw_ijlk, **_):
         R_src_il = D_src_il / 2
         with catch_warnings():
             filterwarnings('ignore', r'invalid value encountered in true_divide')
@@ -36,13 +76,13 @@ class NOJDeficit(NiayifarGaussianDeficit, WakeRadiusTopHat):
         with catch_warnings():
             filterwarnings('ignore', r'invalid value encountered in true_divide')
             filterwarnings('ignore', r'invalid value encountered in divide')
-            self.layout_factor_ijlk = WS_ref_ilk[:, na] * (in_wake_ijlk / term_denominator_ijlk)
+            return in_wake_ijlk / term_denominator_ijlk
 
     def calc_deficit(self, ct_ilk, **kwargs):
-        if not self.deficit_initalized:
-            self._calc_layout_terms(ct_ilk=ct_ilk, **kwargs)
         term_numerator_ilk = 2. * self.ct2a(ct_ilk)
-        return term_numerator_ilk[:, na] * self.layout_factor_ijlk
+        if self.deficit_initalized:
+            return term_numerator_ilk[:, na] * self.layout_factor_ijlk
+        return _noj_deficit(term_numerator_ilk, kwargs[self.WS_key], self._in_wake_ratio_ijlk(**kwargs))
 
     def wake_radius(self, D_src_il, dw_ijlk, **kwargs):
         k_ijlk = np.atleast_3d(self.k_ilk(**kwargs))[:, na]
@@ -117,10 +157,10 @@ class NOJLocalDeficit(NOJDeficit):
         with catch_warnings():
             filterwarnings(
                 'ignore', r'invalid value encountered in true_divide')
-            layout_factor_ijlk = WS_ref_ilk[:, na] * (in_wake_ijlk / term_denominator_ijlk)
+            ratio_ijlk = in_wake_ijlk / term_denominator_ijlk
 
         term_numerator_ilk = 2. * self.ct2a(ct_ilk)
-        return term_numerator_ilk[:, na] * layout_factor_ijlk
+        return _noj_deficit(term_numerator_ilk, WS_ref_ilk, ratio_ijlk)
 
 
 class NOJLocal(PropagateDownwind):
