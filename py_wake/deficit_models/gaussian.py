@@ -82,7 +82,8 @@ class BastankhahGaussianDeficit(ConvectionDeficitModel):
             return self.calc_deficit(cw_ijlk=cw_ijlk * 0, **kwargs)
         _, sigma_sqr_ijlk, deficit_centre_ijlk, _ = self._calc_deficit(sigma_ijlk=sigma_ijlk, **kwargs)
         exponent_ijlk = -1 / (2 * sigma_sqr_ijlk) * (cw_ijlk * 0)**2
-        if np.iscomplexobj(exponent_ijlk) or np.any(exponent_ijlk):
+        if np.iscomplexobj(deficit_centre_ijlk) or exponent_ijlk.dtype != deficit_centre_ijlk.dtype or \
+                np.any(exponent_ijlk):
             return deficit_centre_ijlk * np.exp(exponent_ijlk)
         return deficit_centre_ijlk
 
