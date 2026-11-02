@@ -7,9 +7,10 @@ passes on `master` fails on `performance`.
 - 1.9-7.1x faster on one thread on farms of 400-2000 turbines: TurbOPark (`Nygaard_2022`) 6.6-7.1x,
   Niayifar 4.7-5.5x, FugaMultiLUT 2.8-3.7x, NOJ 2.7-4.2x, `NOJLocalDeficit` 2.3-3.7x, Bastankhah
   1.9-2.4x.
-- 3-68x less peak memory. After, it stays under 1 GB up to 2000 turbines (0.38-0.64 GB at 400).
-  `master` grows with the square of the turbine count and needs 29-56 GB at 2000 turbines,
-  where its RSS saturates at 22-26 GB on this 36 GB machine and macOS compresses the rest.
+- 3-33x less peak memory (RSS). After, it stays under 1 GB up to 2000 turbines (0.38-0.64 GB at
+  400). `master` grows with the square of the turbine count; at 2000 turbines its RSS saturates at
+  22-26 GB on this 36 GB machine while macOS compresses the rest (physical footprint 29-56 GB), so
+  the 26-33x there is a lower bound.
 - `WS_eff`, `TI_eff`, `CT`, `Power` and AEP are byte-identical (`tobytes()`) to `master` on every
   benchmark case below.
 
@@ -18,14 +19,16 @@ passes on `master` fails on `performance`.
 Apple M4 Max (36 GB RAM), Python 3.12.16, numpy 2.5.4, numba 0.68.0, xarray 2026.9.0, one thread.
 Models (`cases.py`): TurbOPark is `Nygaard_2022`, Niayifar is `Niayifar_PorteAgel_2016`, NOJ is `NOJ`,
 `NOJLocalDeficit` uses `ct2a_mom1d`, area overlap and `LinearSum` in `PropagateDownwind`, Bastankhah
-is `IEA37SimpleBastankhahGaussian` and FugaMultiLUT is `FugaMultiLUTDeficit` with two LUTs. Farms: two turbine types, 72 wind directions x 22 wind speeds (`scale<N>` in `cases.py`; `scale400`
-is `grid400`). Times are the CPU time of one simulation call, the median over fresh processes that
+is `IEA37SimpleBastankhahGaussian` and FugaMultiLUT is `FugaMultiLUTDeficit` with two LUTs. Farms:
+two turbine types, 72 wind directions x 22 wind speeds (`scale<N>` in `cases.py`; `scale400` is
+`grid400`). Times are the CPU time of one simulation call, the median over fresh processes that
 alternate before and after (400 turbines: 5 pairs, 1000 and 1500: 3 pairs, 2000: 1 pair). Memory is
-the peak RSS of the process, except at 2000 turbines: `master` no longer fits in RAM there (its RSS
-saturates at 22-26 GB while macOS compresses the rest), so that row shows the physical footprint, and
-`master`'s time there includes compression and paging. Each process at 2000 turbines ran one
-simulation, so the after times there include numba compilation. At 1500 turbines the footprint of `master`
-was 32.1 GB for Niayifar and 23.1 GB for FugaMultiLUT, above the RSS shown.
+the peak RSS of the process. At 2000 turbines `master` no longer fits in RAM: its RSS saturates at
+22-26 GB while macOS compresses the rest (physical footprint 29-56 GB), so the memory ratios in
+that row are lower bounds, and `master`'s time there includes compression and paging. At 1500
+turbines the footprint of `master` was 32.1 GB for Niayifar and 23.1 GB for FugaMultiLUT, above the
+RSS shown, so those two ratios are lower bounds too. Each process at 2000 turbines ran one
+simulation, so the after times there include numba compilation.
 
 | Farm | Model | Time before | Time after | Speed-up | Memory before | Memory after | Less memory |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
@@ -47,17 +50,18 @@ was 32.1 GB for Niayifar and 23.1 GB for FugaMultiLUT, above the RSS shown.
 | | NOJ | 15.1 s | 3.8 s | 4.0x | 18.6 GB | 0.68 GB | 27x |
 | | NOJLocalDeficit | 12.2 s | 3.7 s | 3.3x | 18.7 GB | 0.67 GB | 28x |
 | | Bastankhah | 16.0 s | 7.1 s | 2.3x | 18.6 GB | 0.71 GB | 26x |
-| 2000 WTGs | TurbOPark | 443 s | 62.7 s | 7.1x | 33.3 GB | 0.71 GB | 47x |
-| | Niayifar | 236 s | 42.6 s | 5.5x | 56.3 GB | 0.83 GB | 68x |
-| | FugaMultiLUT | 45.1 s | 12.2 s | 3.7x | 40.7 GB | 0.80 GB | 51x |
-| | NOJ | 28.2 s | 6.7 s | 4.2x | 29.5 GB | 0.63 GB | 47x |
-| | NOJLocalDeficit | 23.8 s | 6.5 s | 3.7x | 32.3 GB | 0.63 GB | 51x |
-| | Bastankhah | 29.8 s | 12.5 s | 2.4x | 29.4 GB | 0.69 GB | 43x |
+| 2000 WTGs | TurbOPark | 443 s | 62.7 s | 7.1x | 23.0 GB | 0.81 GB | 28x |
+| | Niayifar | 236 s | 42.6 s | 5.5x | 26.2 GB | 0.94 GB | 28x |
+| | FugaMultiLUT | 45.1 s | 12.2 s | 3.7x | 23.5 GB | 0.89 GB | 26x |
+| | NOJ | 28.2 s | 6.7 s | 4.2x | 22.5 GB | 0.71 GB | 31x |
+| | NOJLocalDeficit | 23.8 s | 6.5 s | 3.7x | 23.8 GB | 0.72 GB | 33x |
+| | Bastankhah | 29.8 s | 12.5 s | 2.4x | 23.9 GB | 0.77 GB | 31x |
 
 ![Time and peak memory against farm size](scaling.png)
 
-In the chart, 250 and 500 turbines are included (`scale250`, `scale500`) and hollow markers are the
-physical footprint, as in the 2000 row.
+In the chart, 250 and 500 turbines are included (`scale250`, `scale500`). The before memory curve
+flattens between 1500 and 2000 turbines because RSS saturates in RAM there, not because `master`
+needs less.
 
 ## Where the gain comes from
 
@@ -128,10 +132,10 @@ python speed.py --base ../../master --head .. --pairs 1 --runs 1 --min-free 0 --
   --out scale2000.json --cases $(cases scale2000)
 python waterfall.py --repo .. --commits master master..e578ba85 --workdir ../../waterfall --pairs 3 \
   --runs 2 --out waterfall.json --cases $(cases grid400)
-python tables.py compare headline.json scale-small.json scale1500.json --footprint scale2000.json \
+python tables.py compare headline.json scale-small.json scale1500.json scale2000.json \
   --farms 400 1000 1500 2000
 python tables.py waterfall waterfall.json
-python charts.py scaling headline.json scale-small.json scale1500.json --footprint scale2000.json \
+python charts.py scaling headline.json scale-small.json scale1500.json scale2000.json \
   --out scaling.png
 python charts.py waterfall waterfall.json --out waterfall.png
 ```

@@ -45,9 +45,8 @@ python bench/charts.py waterfall waterfall.json --out waterfall.png
   once as a detached worktree under `--workdir` (remove them with `git worktree remove`).
 - `tables.py` prints `speed.py` reports as one before and after table (time, speed-up, memory and how
   many times less memory) and `waterfall.py` reports as per-commit time and memory tables. `charts.py`
-  draws time and peak memory against farm size and the speed-up and memory after each commit. Later
-  reports override earlier ones for the same case, and `--footprint` marks reports whose memory column
-  is the peak footprint instead of RSS.
+  draws time and peak memory against farm size and the speed-up and memory after each commit. Memory is
+  the peak RSS, and later reports override earlier ones for the same case.
 - Cases are `<model>-<farm>`. Models: `turbopark` (`Nygaard_2022`: TurboGaussian, Mirror, Gaussian
   overlap, SquaredSum, deficit scaled with the downstream ambient speed), `nojlocal` (`NOJLocalDeficit`
   with area overlap, `ct2a_mom1d`, `a=[0, 0.04]`, no effective TI, LinearSum), `fugamultilut` (two LUTs),
