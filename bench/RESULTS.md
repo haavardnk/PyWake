@@ -1,31 +1,45 @@
+---
+created: 2026-11-02T08:41
+updated: 2026-11-02T09:19
+---
 # Results
 
-Upstream `master` (before, `586aec8e`) against `performance` (after, library code at `e578ba85`).
-Every change keeps the simulation results byte-identical to `master`, and no upstream test that
-passes on `master` fails on `performance`.
+Upstream `master` (before, `586aec8e`) compared with `performance` (after, library code at
+`e578ba85`). Every change keeps the simulation results byte-identical to `master`, and no upstream
+test that passes on `master` fails on `performance`.
 
-- 1.9-7.1x faster on one thread on farms of 400-2000 turbines: TurbOPark (`Nygaard_2022`) 6.6-7.1x,
-  Niayifar 4.7-5.5x, FugaMultiLUT 2.8-3.7x, NOJ 2.7-4.2x, `NOJLocalDeficit` 2.3-3.7x, Bastankhah
-  1.9-2.4x.
-- 3-68x less peak memory. After, it stays under 1 GB up to 2000 turbines (0.38-0.64 GB at 400).
-  `master` grows with the square of the turbine count and needs 29-56 GB at 2000 turbines,
-  where its RSS saturates at 22-26 GB on this 36 GB machine and macOS compresses the rest.
-- `WS_eff`, `TI_eff`, `CT`, `Power` and AEP are byte-identical (`tobytes()`) to `master` on every
-  benchmark case below.
+- 1.9-7.1x faster on one thread for farms of 400-2000 turbines: TurbOPark (`Nygaard_2022`)
+  6.6-7.1x, Niayifar 4.7-5.5x, FugaMultiLUT 2.8-3.7x, NOJ 2.7-4.2x, `NOJLocalDeficit` 2.3-3.7x and
+  Bastankhah 1.9-2.4x.
+- 3-33x less peak memory. After, a simulation stays under 1 GB up to 2000 turbines. Before, memory
+  grows with the square of the turbine count and no longer fits in 36 GB of RAM at 2000 turbines.
+- `WS_eff`, `TI_eff`, `CT`, `Power` and AEP are byte-identical (`tobytes()`) to `master` in every
+  benchmark case.
 
 ## Before and after
 
-Apple M4 Max (36 GB RAM), Python 3.12.16, numpy 2.5.4, numba 0.68.0, xarray 2026.9.0, one thread.
-Models (`cases.py`): TurbOPark is `Nygaard_2022`, Niayifar is `Niayifar_PorteAgel_2016`, NOJ is `NOJ`,
-`NOJLocalDeficit` uses `ct2a_mom1d`, area overlap and `LinearSum` in `PropagateDownwind`, Bastankhah
-is `IEA37SimpleBastankhahGaussian` and FugaMultiLUT is `FugaMultiLUTDeficit` with two LUTs. Farms: two turbine types, 72 wind directions x 22 wind speeds (`scale<N>` in `cases.py`; `scale400`
-is `grid400`). Times are the CPU time of one simulation call, the median over fresh processes that
-alternate before and after (400 turbines: 5 pairs, 1000 and 1500: 3 pairs, 2000: 1 pair). Memory is
-the peak RSS of the process, except at 2000 turbines: `master` no longer fits in RAM there (its RSS
-saturates at 22-26 GB while macOS compresses the rest), so that row shows the physical footprint, and
-`master`'s time there includes compression and paging. Each process at 2000 turbines ran one
-simulation, so the after times there include numba compilation. At 1500 turbines the footprint of `master`
-was 32.1 GB for Niayifar and 23.1 GB for FugaMultiLUT, above the RSS shown.
+Apple M4 Max with 36 GB RAM, Python 3.12.16, numpy 2.5.4, numba 0.68.0 and xarray 2026.9.0, one
+thread. Each farm has two turbine types and 72 wind directions x 22 wind speeds (`scale<N>` in
+`cases.py`; `scale400` is `grid400`). The models, from `cases.py`:
+
+| Name | Model |
+| --- | --- |
+| TurbOPark | `Nygaard_2022` |
+| Niayifar | `Niayifar_PorteAgel_2016` |
+| FugaMultiLUT | `FugaMultiLUTDeficit` with two LUTs |
+| NOJ | `NOJ` |
+| NOJLocalDeficit | `NOJLocalDeficit` with `ct2a_mom1d`, area overlap and `LinearSum` in `PropagateDownwind` |
+| Bastankhah | `IEA37SimpleBastankhahGaussian` |
+
+Time is the CPU time of one simulation call: the median over fresh processes that alternate before
+and after (5 pairs at 400 turbines, 3 at 1000 and 1500, 1 at 2000). Memory is the peak RSS of the
+process.
+
+At 2000 turbines `master` no longer fits in RAM. Its RSS saturates at 22-26 GB while macOS
+compresses the rest (physical footprint 29-56 GB), so the memory ratios in that row are lower
+bounds and the before times include compression and paging. The same holds for Niayifar and
+FugaMultiLUT at 1500 turbines, where the footprint of `master` was 32.1 and 23.1 GB. Each process at
+2000 turbines ran a single simulation, so the after times there include numba compilation.
 
 | Farm | Model | Time before | Time after | Speed-up | Memory before | Memory after | Less memory |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
@@ -47,23 +61,24 @@ was 32.1 GB for Niayifar and 23.1 GB for FugaMultiLUT, above the RSS shown.
 | | NOJ | 15.1 s | 3.8 s | 4.0x | 18.6 GB | 0.68 GB | 27x |
 | | NOJLocalDeficit | 12.2 s | 3.7 s | 3.3x | 18.7 GB | 0.67 GB | 28x |
 | | Bastankhah | 16.0 s | 7.1 s | 2.3x | 18.6 GB | 0.71 GB | 26x |
-| 2000 WTGs | TurbOPark | 443 s | 62.7 s | 7.1x | 33.3 GB | 0.71 GB | 47x |
-| | Niayifar | 236 s | 42.6 s | 5.5x | 56.3 GB | 0.83 GB | 68x |
-| | FugaMultiLUT | 45.1 s | 12.2 s | 3.7x | 40.7 GB | 0.80 GB | 51x |
-| | NOJ | 28.2 s | 6.7 s | 4.2x | 29.5 GB | 0.63 GB | 47x |
-| | NOJLocalDeficit | 23.8 s | 6.5 s | 3.7x | 32.3 GB | 0.63 GB | 51x |
-| | Bastankhah | 29.8 s | 12.5 s | 2.4x | 29.4 GB | 0.69 GB | 43x |
+| 2000 WTGs | TurbOPark | 443 s | 62.7 s | 7.1x | 23.0 GB | 0.81 GB | 28x |
+| | Niayifar | 236 s | 42.6 s | 5.5x | 26.2 GB | 0.94 GB | 28x |
+| | FugaMultiLUT | 45.1 s | 12.2 s | 3.7x | 23.5 GB | 0.89 GB | 26x |
+| | NOJ | 28.2 s | 6.7 s | 4.2x | 22.5 GB | 0.71 GB | 31x |
+| | NOJLocalDeficit | 23.8 s | 6.5 s | 3.7x | 23.8 GB | 0.72 GB | 33x |
+| | Bastankhah | 29.8 s | 12.5 s | 2.4x | 23.9 GB | 0.77 GB | 31x |
 
 ![Time and peak memory against farm size](scaling.png)
 
-In the chart, 250 and 500 turbines are included (`scale250`, `scale500`) and hollow markers are the
-physical footprint, as in the 2000 row.
+The chart adds 250 and 500 turbines (`scale250`, `scale500`). The before memory curve flattens
+between 1500 and 2000 turbines because RSS saturates in RAM there; the footprint keeps growing.
 
 ## Where the gain comes from
 
-`grid400` (400 turbines), 3 alternating pairs per commit, median CPU time; the cumulative speed-up
-over `master` is in brackets. Each row is one commit on `performance`, oldest first. These are
-separate runs from the table above, so the last row differs from its 400-turbine rows by up to 0.1x.
+Each row is one commit on `performance` that changes library code, oldest first, timed on `grid400`
+(400 turbines) as the median CPU time of 3 alternating pairs. The cumulative speed-up over `master`
+is in brackets. These runs are separate from the table above, so the last row can differ from its
+400-turbine rows by up to 0.1x.
 
 ![Speed-up and peak memory after each commit](waterfall.png)
 
@@ -93,80 +108,58 @@ separate runs from the table above, so the last row differs from its 400-turbine
 | 5ec051b2 | compute the masked crespo added turbulence in one compiled loop | 2.7 s (6.6x) | 1.9 s (4.6x) | 0.92 s (1.9x) | 0.45 s (2.6x) | 0.44 s (2.2x) | 0.65 s (1.8x) |
 | e578ba85 | start the irregular grid axis search from a cached guess and widen it exactly | 2.7 s (6.6x) | 1.9 s (4.6x) | 0.65 s (2.7x) | 0.45 s (2.6x) | 0.44 s (2.2x) | 0.65 s (1.8x) |
 
-Peak memory drops mostly at one point: accumulating the superposition per turbine instead of
-storing every turbine pair's deficit (`444b22fa`, and `b4dbc808` for Niayifar's added turbulence).
-From there it stays at 0.33-0.63 GB on `grid400` and, as the scaling chart shows, grows far slower
-than the farm.
-
-## Method
-
-- `speed.py` runs every case in a fresh process with one thread (`NUMBA_NUM_THREADS=1` and the BLAS
-  equivalents), alternating `master` and `performance`, and runs `gc.collect()` before each timed
-  simulation. The tables show the second simulation in each process. The first is 0.2-1.6 s slower
-  after, which includes numba compilation, and up to 0.5 s slower before (up to 1.6 s at 1500
-  turbines). The new kernels are compiled lazily and not cached on disk (no `cache=True`). The 1500
-  and 2000 turbine runs used `--min-free 0`, because `master` needs more memory there than the
-  default guard allows.
-- `waterfall.py` times `master` and each commit on `performance` that changes `py_wake/` outside the
-  tests, in detached worktrees, alternating the order between pairs.
-- `identity.py` saves `WS_eff`, `TI_eff`, `CT`, `Power` and total AEP from each checkout and compares
-  them bytewise.
-- `tables.py` and `charts.py` turn the JSON reports into these tables and charts.
-
-The commands, from `bench/` with `master` and `performance` checked out next to each other
-(`M` is the six models):
-
-```sh
-M="turbopark niayifar fugamultilut noj nojlocal bastankhah"
-cases() { for m in $M; do printf "%s-%s " "$m" "$1"; done; }
-python speed.py --base ../../master --head .. --pairs 5 --runs 2 --out headline.json
-python speed.py --base ../../master --head .. --pairs 3 --runs 2 --out scale-small.json \
-  --cases $(cases scale250) $(cases scale500) $(cases scale1000)
-python speed.py --base ../../master --head .. --pairs 3 --runs 2 --min-free 0 --out scale1500.json \
-  --cases $(cases scale1500)
-python speed.py --base ../../master --head .. --pairs 1 --runs 1 --min-free 0 --timeout 10800 \
-  --out scale2000.json --cases $(cases scale2000)
-python waterfall.py --repo .. --commits master master..e578ba85 --workdir ../../waterfall --pairs 3 \
-  --runs 2 --out waterfall.json --cases $(cases grid400)
-python tables.py compare headline.json scale-small.json scale1500.json --footprint scale2000.json \
-  --farms 400 1000 1500 2000
-python tables.py waterfall waterfall.json
-python charts.py scaling headline.json scale-small.json scale1500.json --footprint scale2000.json \
-  --out scaling.png
-python charts.py waterfall waterfall.json --out waterfall.png
-```
+Most of the memory reduction comes from one change: accumulating the superposition per turbine
+instead of storing every turbine pair's deficit (`444b22fa`, plus `b4dbc808` for Niayifar's added
+turbulence). After it, peak memory on `grid400` is 0.33-0.63 GB and grows far slower than the farm.
 
 ## Exactness
 
 `identity.py` compared `master` and `performance` on 49 cases: the 19 default cases (`hr1`,
-`grid400` and `aligned100` for the six models, `fuga` on `hr1`) and `scale250`, `scale500`, `scale1000`,
-`scale1500` and `scale2000` for the six models in the table. `WS_eff`, `TI_eff`, `CT`, `Power` and
-AEP are byte-identical in every case.
+`grid400` and `aligned100` for the six models, plus `fuga` on `hr1`) and `scale250`, `scale500`,
+`scale1000`, `scale1500` and `scale2000` for the six models. `WS_eff`, `TI_eff`, `CT`, `Power` and
+AEP are byte-identical in every case. The results match for these reasons:
 
-- The new kernels use only `+ - * /`, `sqrt`, `min`, `max`, `abs`, `floor` and comparisons, in numpy's order
-  of operations. `log`, `exp`, `arccos` and powers stay in numpy. They use no `fastmath`, no float32
-  and no reassociation, and their IR contains no fused multiply-add.
-- Accumulating the superposition per turbine reproduces numpy's sum because numpy reduces axis 0 of
-  a C-ordered array sequentially when each row holds more than one value; the accumulating path is
-  only taken in that case.
-- Every compiled path is guarded: it runs only with the numpy backend on real float64 arrays.
-  Autograd, complex-step and `Numpy32` inputs fall back to the stock code, so gradients keep working.
-- Compiled kernels do not emit numpy's floating-point `RuntimeWarning`s and ignore `np.errstate`.
+- The new kernels use only `+ - * /`, `sqrt`, `min`, `max`, `abs`, `floor` and comparisons, in
+  numpy's order of operations. `log`, `exp`, `arccos` and powers stay in numpy. The kernels use no
+  `fastmath`, float32 or reassociation, and their IR has no fused multiply-add.
+- Accumulating per turbine reproduces numpy's sum, because numpy reduces axis 0 of a C-ordered array
+  sequentially when each row holds more than one value. The accumulating path only runs in that
+  case.
+- Compiled paths run only with the numpy backend on real float64 arrays. Autograd, complex-step and
+  `Numpy32` inputs use the stock code, so gradients keep working.
 
-The upstream test suite was run on both checkouts on the same day and machine (`pytest py_wake/tests
--n 8`). `performance` runs 1876 tests (`master` 1345; the fork adds tests for its compiled paths, guards
-and fallbacks). Both fail exactly the same 24 tests and 3 collection errors in this
-environment: optional packages that are not installed (load surrogates, line profiling), downloads
-from DTU servers that were unreachable during the run, five notebooks, one parallelization test, one
-NEWA Weibull test and 11 blockage-model gradient tests. `test_model_gradients.py` run alone also
-fails the same 11 tests on both.
+One behavior differs: compiled kernels do not emit numpy's floating-point `RuntimeWarning`s and
+ignore `np.errstate`.
+
+The upstream test suite (`pytest py_wake/tests -n 8`) ran on both checkouts on the same day and
+machine. `performance` runs 1876 tests and `master` 1345; the extra tests cover the compiled paths,
+guards and fallbacks. Both fail the same 24 tests and 3 collection errors in this environment:
+optional packages that are not installed (load surrogates, line profiling), downloads from DTU
+servers that were unreachable during the run, five notebooks, one parallelization test, one NEWA
+Weibull test and 11 blockage-model gradient tests. Run alone, `test_model_gradients.py` fails the
+same 11 tests on both.
+
+## Method
+
+- `speed.py` runs each case in a fresh process on one thread (`NUMBA_NUM_THREADS=1` and the BLAS
+  equivalents), alternating `master` and `performance`, with `gc.collect()` before each timed
+  simulation. The tables show the second simulation in each process. The first is 0.2-1.6 s slower
+  after because it includes numba compilation, and up to 0.5 s slower before (up to 1.6 s at 1500
+  turbines). The kernels compile lazily and are not cached on disk (no `cache=True`). The 1500 and
+  2000 turbine runs had the memory guard off (`--min-free 0`), because `master` needs more memory
+  there than the default guard allows.
+- `waterfall.py` times `master` and each commit on `performance` that changes `py_wake/` outside the
+  tests, in detached worktrees, alternating the order between pairs.
+- `identity.py` saves `WS_eff`, `TI_eff`, `CT`, `Power` and total AEP from each checkout and
+  compares them byte for byte.
+- `tables.py` and `charts.py` build the tables and charts from the JSON reports. Usage is in
+  [README.md](README.md).
 
 ## Notes for upstream
 
 - py_wake already depends on numba (`shadow_models`), so the kernels add no dependency.
-- `test_memory_usage` always passes: it unpacks the `(result, memory)` pair of
-  `check_memory_usage` in the wrong order, so it compares the simulation result instead of the
-  memory.
-- Two kernels started from candidates found with OpenEvolve, an LLM-driven code search: the fused
+- `test_memory_usage` always passes. It unpacks the `(result, memory)` pair from
+  `check_memory_usage` in the wrong order, so it checks the simulation result instead of the memory.
+- Two kernels started from candidates found by OpenEvolve, an LLM-driven code search: the fused
   Gaussian overlap factor and the guessed search on irregular grid axes. Both were ported by hand
   and pass the same identity and test checks as the rest.

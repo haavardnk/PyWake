@@ -24,20 +24,12 @@ def farm_size(farm):
     return int(match.group(1)) if match else None
 
 
-def memory(side, footprint):
-    return side["footprint"] if footprint else side["rss"]
-
-
-def comparisons(paths, footprint_paths=()):
+def comparisons(paths):
     rows = {}
-    for path in [*paths, *footprint_paths]:
+    for path in paths:
         for case, sides in read(path)["results"].items():
             model, farm = case.split("-")
             size = farm_size(farm)
             if size and model in MODELS:
-                footprint = path in footprint_paths
-                rows[size, model] = {
-                    side: {**sides[side], "memory": memory(sides[side], footprint), "is_footprint": footprint}
-                    for side in ("base", "head")
-                }
+                rows[size, model] = {side: sides[side] for side in ("base", "head")}
     return dict(sorted(rows.items(), key=lambda item: (item[0][0], list(MODELS).index(item[0][1]))))

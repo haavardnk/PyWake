@@ -39,7 +39,7 @@ def compare(args):
     print("| Farm | Model | Time before | Time after | Speed-up | Memory before | Memory after | Less memory |")
     print("| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |")
     previous = None
-    for (size, model), sides in comparisons(args.inputs, args.footprint).items():
+    for (size, model), sides in comparisons(args.inputs).items():
         if args.farms and size not in args.farms:
             continue
         base, head = sides["base"], sides["head"]
@@ -50,9 +50,9 @@ def compare(args):
             time_cell(base),
             time_cell(head),
             factor(base["cpu"] / head["cpu"]) if complete else "-",
-            memory_cell(base["memory"], base),
-            memory_cell(head["memory"], head),
-            factor(base["memory"] / head["memory"]) if complete else "-",
+            memory_cell(base["rss"], base),
+            memory_cell(head["rss"], head),
+            factor(base["rss"] / head["rss"]) if complete else "-",
         ]
         previous = size
         print(markdown_row(cells))
@@ -90,9 +90,6 @@ def main():
     commands = parser.add_subparsers(dest="command", required=True)
     compare_parser = commands.add_parser("compare", help="one table from speed.py reports, later files win")
     compare_parser.add_argument("inputs", nargs="+")
-    compare_parser.add_argument(
-        "--footprint", nargs="*", default=[], help="reports whose memory is the footprint, applied last"
-    )
     compare_parser.add_argument("--farms", nargs="*", type=int, help="farm sizes to keep")
     waterfall_parser = commands.add_parser("waterfall", help="per-commit tables from a waterfall.py report")
     waterfall_parser.add_argument("input")

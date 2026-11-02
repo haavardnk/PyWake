@@ -12,7 +12,7 @@ FARM_TICKS = [250, 500, 1000, 2000]
 
 
 def scaling(args):
-    rows = comparisons(args.inputs, args.footprint)
+    rows = comparisons(args.inputs)
     models = [model for model in MODELS if any(row_model == model for _, row_model in rows)]
     figure, axes = plt.subplots(2, len(models), figsize=(2.6 * len(models), 5.6), sharex=True, squeeze=False)
     for column, model in enumerate(models):
@@ -21,15 +21,7 @@ def scaling(args):
             done = [(size, sides[side]) for size, sides in points if "failed" not in sides[side]]
             sizes = [size for size, _ in done]
             line = axes[0, column].plot(sizes, [run["cpu"] for _, run in done], style, label=label)[0]
-            axes[1, column].plot(sizes, [run["memory"] / GB for _, run in done], style, color=line.get_color())
-            footprints = [(size, run) for size, run in done if run["is_footprint"]]
-            axes[1, column].plot(
-                [size for size, _ in footprints],
-                [run["memory"] / GB for _, run in footprints],
-                style[0],
-                color=line.get_color(),
-                markerfacecolor="white",
-            )
+            axes[1, column].plot(sizes, [run["rss"] / GB for _, run in done], style, color=line.get_color())
         axes[0, column].set_title(MODELS[model])
         axes[1, column].set_xlabel("wind turbines")
         for axis in axes[:, column]:
@@ -39,7 +31,7 @@ def scaling(args):
         axes[1, column].set_xticks(FARM_TICKS, [str(size) for size in FARM_TICKS])
         axes[1, column].xaxis.set_minor_formatter(NullFormatter())
     axes[0, 0].set_ylabel("CPU time (s)")
-    axes[1, 0].set_ylabel("peak memory (GB, hollow: footprint)")
+    axes[1, 0].set_ylabel("peak RSS (GB)")
     axes[0, 0].legend()
     figure.tight_layout()
     figure.savefig(args.out, dpi=120)
@@ -77,9 +69,6 @@ def main():
     commands = parser.add_subparsers(dest="command", required=True)
     scaling_parser = commands.add_parser("scaling", help="time and memory against farm size, later files win")
     scaling_parser.add_argument("inputs", nargs="+")
-    scaling_parser.add_argument(
-        "--footprint", nargs="*", default=[], help="reports whose memory is the footprint, applied last"
-    )
     scaling_parser.add_argument("--out", required=True)
     waterfall_parser = commands.add_parser("waterfall", help="speed-up and memory after each commit")
     waterfall_parser.add_argument("input")
