@@ -87,7 +87,7 @@ class EngineeringWindFarmModel(WindFarmModel):
         self.inputModifierModels = inputModifierModels
         self.externalWindFarms = externalWindFarms
 
-        if isinstance(superpositionModel, (WeightedSum, CumulativeWakeSum)):
+        if self.weighted_or_cumulative_superposition:
             assert isinstance(wake_deficitModel, ConvectionDeficitModel)
             wake_rotorAvgModel = rotorAvgModel or self.wake_deficitModel.rotorAvgModel
             assert wake_rotorAvgModel is None or isinstance(wake_rotorAvgModel, NodeRotorAvgModel), \
@@ -126,8 +126,7 @@ class EngineeringWindFarmModel(WindFarmModel):
         if self.blockage_deficitModel:
             self.args4deficit = set(self.args4deficit) | set(self.blockage_deficitModel.args4deficit)
             # use linear sum as default blockage superpositionModel
-            is_w_or_c_sum = isinstance(self.superpositionModel, (WeightedSum, CumulativeWakeSum))
-            alt_model = [self.superpositionModel, LinearSum()][is_w_or_c_sum]
+            alt_model = [self.superpositionModel, LinearSum()][self.weighted_or_cumulative_superposition]
             self.blockage_deficitModel.superpositionModel = self.blockage_deficitModel.superpositionModel or alt_model
 
         self.args4all = set(self.args4deficit)
@@ -141,6 +140,10 @@ class EngineeringWindFarmModel(WindFarmModel):
             self.args4all |= set(input_modifier.args4model)
         for ext_wf in self.externalWindFarms:
             self.args4all |= set(ext_wf.args4model)
+
+    @property
+    def weighted_or_cumulative_superposition(self):
+        return isinstance(self.superpositionModel, (WeightedSum, CumulativeWakeSum))
 
     def __str__(self):
         def name(o):
@@ -373,7 +376,7 @@ class EngineeringWindFarmModel(WindFarmModel):
         # ===============================================================================================================
         # Calculate deficit
         # ===============================================================================================================
-        if isinstance(self.superpositionModel, (WeightedSum, CumulativeWakeSum)):
+        if self.weighted_or_cumulative_superposition:
             deficit_ijlk, deficit_centre_ijlk, uc_ijlk, sigma_sqr_ijlk, blockage_ijlk = self._calc_deficit_convection(
                 **model_kwargs)
         else:
@@ -397,7 +400,7 @@ class EngineeringWindFarmModel(WindFarmModel):
         # Sum up deficits
         # ===============================================================================================================
         sp_kwargs = dict(deficit_jxxx=deficit_ijlk)
-        if isinstance(self.superpositionModel, (WeightedSum, CumulativeWakeSum)):
+        if self.weighted_or_cumulative_superposition:
             if isinstance(self.superpositionModel, WeightedSum):
                 sp_kwargs.update({'WS_xxx': WS_jlk,
                                   'convection_velocity_jxxx': uc_ijlk,
@@ -682,7 +685,7 @@ class PropagateUpDownIterative(EngineeringWindFarmModel):
                     return np.array([d_nk2[i] for d_nk2, i in zip(value_nk, range(j)[::-1])])
 
                 sp_kwargs = {'deficit_jxxx': get_value2WT(deficit_nk)}
-                if isinstance(self.superpositionModel, (WeightedSum, CumulativeWakeSum)):
+                if self.weighted_or_cumulative_superposition:
                     sp_kwargs.update({k: get_value2WT(v_nk) for k, v_nk in [('sigma_sqr_jxxx', sigma_sqr_nk),
                                                                             ('cw_jxxx', cw_nk),
                                                                             ('hcw_jxxx', hcw_nk),
@@ -785,13 +788,15 @@ class PropagateUpDownIterative(EngineeringWindFarmModel):
                 if 'z_ijlk' in self.args4all:
                     model_kwargs['z_ijlk'] = h_mk[m][na, na] + dh_ijlk
 
-                hcw_nk.append(hcw_ijlk[0])
-                dh_nk.append(dh_ijlk[0])
+                if self.weighted_or_cumulative_superposition:
+                    hcw_nk.append(hcw_ijlk[0])
+                    dh_nk.append(dh_ijlk[0])
 
                 if 'cw_ijlk' in self.args4all:
                     # sqrt(a**2+b**2) as hypot does not support complex numbers
                     model_kwargs['cw_ijlk'] = np.sqrt(dh_ijlk**2 + hcw_ijlk**2)
-                    cw_nk.append(model_kwargs['cw_ijlk'][0])
+                    if self.weighted_or_cumulative_superposition:
+                        cw_nk.append(model_kwargs['cw_ijlk'][0])
 
                 if 'wake_radius_ijl' in self.args4all:
                     model_kwargs['wake_radius_ijl'] = self.wake_deficitModel.wake_radius(**model_kwargs)[..., 0]
@@ -802,7 +807,7 @@ class PropagateUpDownIterative(EngineeringWindFarmModel):
                 # ======================================================================================================
                 # Calculate deficit
                 # ======================================================================================================
-                if isinstance(self.superpositionModel, (WeightedSum, CumulativeWakeSum)) and self.direction == 'down':
+                if self.weighted_or_cumulative_superposition and self.direction == 'down':
                     # only cw needs to be rotor averaged as remaining super position input is
                     # the same all over the rotor
                     if self.wake_deficitModel.rotorAvgModel:
