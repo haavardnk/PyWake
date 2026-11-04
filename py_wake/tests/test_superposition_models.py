@@ -1,3 +1,5 @@
+from unittest import mock
+
 import pytest
 from py_wake import np
 from py_wake import NOJ
@@ -5,7 +7,8 @@ from py_wake.site._site import UniformSite
 from py_wake.superposition_models import LinearSum, SquaredSum, MaxSum, SqrMaxSum, WeightedSum, CumulativeWakeSum, \
     SuperpositionModel
 from py_wake.tests import npt
-from py_wake.wind_farm_models.engineering_models import PropagateDownwind, All2AllIterative
+from py_wake.wind_farm_models.engineering_models import PropagateDownwind, PropagateUpDownIterative, \
+    All2AllIterative
 from py_wake.deficit_models.noj import NOJDeficit
 from py_wake.turbulence_models import TurbulenceModel
 from py_wake.flow_map import HorizontalGrid, Points
@@ -21,6 +24,9 @@ from py_wake.utils.model_utils import get_models
 from py_wake.tests.test_wind_farm_models.test_enginering_wind_farm_model import OperatableV80
 from py_wake.turbulence_models.crespo import CrespoHernandez
 from py_wake.rotor_avg_models.rotor_avg_model import CGIRotorAvg
+from py_wake.turbulence_models.gcl_turb import GCLTurbulence
+from py_wake.turbulence_models.stf import STF2017TurbulenceModel
+from py_wake.utils.gradients import autograd, cs, fd
 
 d02 = 8.1 - 5.7
 d12 = 8.1 - 4.90473373
@@ -190,3 +196,46 @@ def test_squaredSum_speedups():
                            blockage_deficitModel=SelfSimilarityDeficit(exclude_wake=False), superpositionModel=SquaredSum())
     with pytest.raises(AssertionError, match='SquaredSum only works for deficit - not speedups'):
         wfm([0, 200, 400], [0, 0, 0], wd=270)
+
+
+@pytest.mark.parametrize('wfm_cls,kwargs', [
+    (PropagateDownwind, dict(turbulenceModel=CrespoHernandez())),
+    (PropagateUpDownIterative, dict(turbulenceModel=STF2017TurbulenceModel(),
+                                    blockage_deficitModel=SelfSimilarityDeficit(superpositionModel=LinearSum(), use_effective_ws=True))),
+    (All2AllIterative, dict(turbulenceModel=CrespoHernandez(),
+                            blockage_deficitModel=SelfSimilarityDeficit(superpositionModel=LinearSum(), use_effective_ws=True)))])
+@pytest.mark.parametrize('superpositionModel', [LinearSum, SquaredSum])
+@pytest.mark.parametrize('wd,ws', [(np.arange(0, 360, 30), [6, 8, 10]), (270, 8)])
+def test_accumulated_deficit(wfm_cls, kwargs, superpositionModel, wd, ws):
+    site = Hornsrev1Site()
+    x, y = site.initial_position.T
+    accumulated, stored = superpositionModel(), type('Stored', (superpositionModel,), {})()
+    for sp in [accumulated, stored]:
+        sp.accumulate_deficit = mock.Mock(wraps=sp.accumulate_deficit)
+    res, ref = [wfm_cls(site, V80(), BastankhahGaussianDeficit(use_effective_ws=True), superpositionModel=sp,
+                        **kwargs)(x, y, wd=wd, ws=ws) for sp in [accumulated, stored]]
+    assert accumulated.accumulate_deficit.called == (np.size(wd) * np.size(ws) > 1)
+    assert not stored.accumulate_deficit.called
+    for k in ['WS_eff', 'TI_eff', 'CT', 'Power']:
+        assert res[k].values.tobytes() == ref[k].values.tobytes()
+
+
+def test_accumulated_deficit_gradients():
+    site = Hornsrev1Site()
+    x, y = site.initial_position[:9].T
+    wfm = PropagateDownwind(site, V80(), NiayifarGaussianDeficit(),
+                            turbulenceModel=GCLTurbulence(LinearSum(), rotorAvgModel=None))
+    dAEP_fd, dAEP_cs, dAEP_autograd = [wfm.aep_gradients(method, ['TI'], x=x, y=y, wd=270, ws=[8, 10], TI=.08)
+                                       for method in [fd, cs, autograd]]
+    npt.assert_array_almost_equal(dAEP_autograd, dAEP_cs, 10)
+    npt.assert_allclose(dAEP_cs, dAEP_fd, rtol=1e-4)
+
+
+def test_accumulated_squaredSum_speedups():
+    class SpeedupDeficit(NOJDeficit):
+        def calc_deficit(self, ct_ilk, **kwargs):
+            return -NOJDeficit.calc_deficit(self, ct_ilk=ct_ilk, **kwargs)
+
+    wfm = PropagateDownwind(UniformSite(), V80(), SpeedupDeficit(), superpositionModel=SquaredSum())
+    with pytest.raises(AssertionError, match='SquaredSum only works for deficit - not speedups'):
+        wfm([0, 200, 400], [0, 0, 0], wd=[270, 280])

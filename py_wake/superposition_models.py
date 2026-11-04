@@ -55,10 +55,19 @@ class SquaredSum(SuperpositionModel, AddedTurbulenceSuperpositionModel):
         assert not np.any(value_jxxx < 0), "SquaredSum only works for deficit - not speedups"
         return np.sqrt(np.sum(np.power(value_jxxx, 2), 0))
 
+    def accumulate_deficit(self, deficit_sum_jxxx, deficit_jxxx):
+        assert not np.any(deficit_jxxx < 0), "SquaredSum only works for deficit - not speedups"
+        deficit_sum_jxxx = deficit_sum_jxxx + np.power(deficit_jxxx, 2)
+        return deficit_sum_jxxx[1:], np.sqrt(deficit_sum_jxxx[0])
+
 
 class LinearSum(SuperpositionModel, AddedTurbulenceSuperpositionModel):
     def __call__(self, value_jxxx):
         return np.sum(value_jxxx, 0)
+
+    def accumulate_deficit(self, deficit_sum_jxxx, deficit_jxxx):
+        deficit_sum_jxxx = deficit_sum_jxxx + deficit_jxxx
+        return deficit_sum_jxxx[1:], deficit_sum_jxxx[0]
 
 
 class MaxSum(SuperpositionModel, AddedTurbulenceSuperpositionModel):

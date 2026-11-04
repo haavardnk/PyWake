@@ -630,6 +630,9 @@ class PropagateUpDownIterative(EngineeringWindFarmModel):
 
         """
 
+        # np.sum adds pairwise when L * K == 1, so a running sum would not be bit-identical
+        accumulate_deficit = self.direction == 'down' and type(self.superpositionModel) in (LinearSum, SquaredSum) and L * K > 1
+        deficit_sum_jlk = 0
         deficit_nk = []
         deficit_centre_nk = []
         blockage_nk = []
@@ -684,24 +687,27 @@ class PropagateUpDownIterative(EngineeringWindFarmModel):
                     """
                     return np.array([d_nk2[i] for d_nk2, i in zip(value_nk, range(j)[::-1])])
 
-                sp_kwargs = {'deficit_jxxx': get_value2WT(deficit_nk)}
-                if self.weighted_or_cumulative_superposition:
-                    sp_kwargs.update({k: get_value2WT(v_nk) for k, v_nk in [('sigma_sqr_jxxx', sigma_sqr_nk),
-                                                                            ('cw_jxxx', cw_nk),
-                                                                            ('hcw_jxxx', hcw_nk),
-                                                                            ('dh_jxxx', dh_nk)]})
-
-                    if isinstance(self.superpositionModel, WeightedSum):
-                        sp_kwargs.update({'WS_xxx': WS_mk[m],
-                                          'convection_velocity_jxxx': get_value2WT(uc_nk),
-                                          'deficit_centre_jxxx': get_value2WT(deficit_centre_nk)})
-                    else:
-                        sp_kwargs.update({'WS0_xxx': np.array(WS_free_mk),
-                                          'WS_eff_xxx': np.array(WS_eff_mk),
-                                          'ct_xxx': np.array(ct_jlk),
-                                          'D_xx': np.array(D_mk)})
                 WS_eff_lk = WS_mk[m]
-                if self.direction == 'down':
+                if accumulate_deficit:
+                    deficit_sum_jlk, deficit_lk = self.superpositionModel.accumulate_deficit(deficit_sum_jlk, deficit_nk.pop()[:I - j])
+                    WS_eff_lk = WS_eff_lk - deficit_lk
+                elif self.direction == 'down':
+                    sp_kwargs = {'deficit_jxxx': get_value2WT(deficit_nk)}
+                    if self.weighted_or_cumulative_superposition:
+                        sp_kwargs.update({k: get_value2WT(v_nk) for k, v_nk in [('sigma_sqr_jxxx', sigma_sqr_nk),
+                                                                                ('cw_jxxx', cw_nk),
+                                                                                ('hcw_jxxx', hcw_nk),
+                                                                                ('dh_jxxx', dh_nk)]})
+
+                        if isinstance(self.superpositionModel, WeightedSum):
+                            sp_kwargs.update({'WS_xxx': WS_mk[m],
+                                              'convection_velocity_jxxx': get_value2WT(uc_nk),
+                                              'deficit_centre_jxxx': get_value2WT(deficit_centre_nk)})
+                        else:
+                            sp_kwargs.update({'WS0_xxx': np.array(WS_free_mk),
+                                              'WS_eff_xxx': np.array(WS_eff_mk),
+                                              'ct_xxx': np.array(ct_jlk),
+                                              'D_xx': np.array(D_mk)})
                     WS_eff_lk = WS_eff_lk - self.superpositionModel.superpose_deficit(**sp_kwargs)
                 if self.blockage_deficitModel:
                     WS_eff_lk = WS_eff_lk - self.blockage_deficitModel.superpositionModel(get_value2WT(blockage_nk))
