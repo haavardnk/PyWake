@@ -23,6 +23,7 @@ from py_wake.rotor_avg_models.rotor_avg_model import (
 from py_wake.superposition_models import (
     CumulativeWakeSum,
     LinearSum,
+    SqrMaxSum,
     SquaredSum,
     SuperpositionModel,
     WeightedSum,
@@ -631,8 +632,13 @@ class PropagateUpDownIterative(EngineeringWindFarmModel):
         """
 
         # np.sum adds pairwise when L * K == 1, so a running sum would not be bit-identical
-        accumulate_deficit = self.direction == 'down' and type(self.superpositionModel) in (LinearSum, SquaredSum) and L * K > 1
+        accumulate = self.direction == 'down' and L * K > 1
+        accumulate_deficit = accumulate and type(self.superpositionModel) in (LinearSum, SquaredSum)
+        accumulate_add_turb = (accumulate and self.turbulenceModel and
+                               type(self.turbulenceModel).calc_effective_TI is TurbulenceModel.calc_effective_TI and
+                               type(self.turbulenceModel.superpositionModel) in (LinearSum, SquaredSum, SqrMaxSum))
         deficit_sum_jlk = 0
+        add_turb_sum_jlk = 0
         deficit_nk = []
         deficit_centre_nk = []
         blockage_nk = []
@@ -713,7 +719,11 @@ class PropagateUpDownIterative(EngineeringWindFarmModel):
                     WS_eff_lk = WS_eff_lk - self.blockage_deficitModel.superpositionModel(get_value2WT(blockage_nk))
                 WS_eff_mk.append(WS_eff_lk)
 
-                if self.turbulenceModel:
+                if accumulate_add_turb:
+                    add_turb_sum_jlk, TI_eff_lk = self.turbulenceModel.superpositionModel.accumulate_effective_TI(
+                        TI_mk[m], add_turb_sum_jlk, add_turb_nk.pop()[:I - j])
+                    TI_eff_mk.append(TI_eff_lk)
+                elif self.turbulenceModel:
                     add_turb2WT = np.array([d_nk2[i] for d_nk2, i in zip(add_turb_nk, range(j)[::-1])])
                     TI_eff_lk = self.turbulenceModel.calc_effective_TI(TI_mk[m], add_turb2WT)
                     TI_eff_mk.append(TI_eff_lk)

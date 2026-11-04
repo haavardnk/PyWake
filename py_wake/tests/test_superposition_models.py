@@ -220,11 +220,44 @@ def test_accumulated_deficit(wfm_cls, kwargs, superpositionModel, wd, ws):
         assert res[k].values.tobytes() == ref[k].values.tobytes()
 
 
-def test_accumulated_deficit_gradients():
+@pytest.mark.parametrize('superpositionModel', [LinearSum, SquaredSum, SqrMaxSum])
+def test_accumulated_added_turbulence(superpositionModel):
+    class StoredTI(STF2017TurbulenceModel):
+        def calc_effective_TI(self, TI_xxx, add_turb_jxxx):
+            return STF2017TurbulenceModel.calc_effective_TI(self, TI_xxx, add_turb_jxxx)
+
+    site = Hornsrev1Site()
+    x, y = site.initial_position.T
+    turb_lst = [STF2017TurbulenceModel(addedTurbulenceSuperpositionModel=superpositionModel()),
+                STF2017TurbulenceModel(addedTurbulenceSuperpositionModel=type('Stored', (superpositionModel,), {})()),
+                StoredTI(addedTurbulenceSuperpositionModel=superpositionModel())]
+    sp_lst = [turb.superpositionModel for turb in turb_lst]
+    for sp in sp_lst:
+        sp.accumulate_effective_TI = mock.Mock(wraps=sp.accumulate_effective_TI)
+    res, *refs = [PropagateDownwind(site, V80(), BastankhahGaussianDeficit(), turbulenceModel=turb)(
+        x, y, wd=np.arange(0, 360, 30), ws=[6, 8, 10]) for turb in turb_lst]
+    assert [sp.accumulate_effective_TI.called for sp in sp_lst] == [True, False, False]
+    for ref in refs:
+        assert res.TI_eff.values.tobytes() == ref.TI_eff.values.tobytes()
+
+
+def test_accumulated_sqrMaxSum_negative():
+    rng = np.random.default_rng(1)
+    TI_lk = rng.random((2, 3))
+    add_turb_nk = [rng.normal(size=(5 - n, 2, 3)) for n in range(5)]
+    add_turb_max_jlk = 0
+    for j in range(1, 6):
+        add_turb_max_jlk, TI_eff_lk = SqrMaxSum().accumulate_effective_TI(TI_lk, add_turb_max_jlk, add_turb_nk[j - 1])
+        add_turb_jlk = np.array([add_turb_nk[n][j - 1 - n] for n in range(j)])
+        assert TI_eff_lk.tobytes() == SqrMaxSum().calc_effective_TI(TI_lk, add_turb_jlk).tobytes()
+
+
+@pytest.mark.parametrize('superpositionModel', [LinearSum, SqrMaxSum])
+def test_accumulated_gradients(superpositionModel):
     site = Hornsrev1Site()
     x, y = site.initial_position[:9].T
     wfm = PropagateDownwind(site, V80(), NiayifarGaussianDeficit(),
-                            turbulenceModel=GCLTurbulence(LinearSum(), rotorAvgModel=None))
+                            turbulenceModel=GCLTurbulence(superpositionModel(), rotorAvgModel=None))
     dAEP_fd, dAEP_cs, dAEP_autograd = [wfm.aep_gradients(method, ['TI'], x=x, y=y, wd=270, ws=[8, 10], TI=.08)
                                        for method in [fd, cs, autograd]]
     npt.assert_array_almost_equal(dAEP_autograd, dAEP_cs, 10)

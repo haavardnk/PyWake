@@ -49,6 +49,10 @@ class AddedTurbulenceSuperpositionModel():
         """
         return TI_xxx + self(add_turb_jxxx)
 
+    def accumulate_effective_TI(self, TI_xxx, add_turb_sum_jxxx, add_turb_jxxx):
+        add_turb_sum_jxxx, add_turb_xxx = self.accumulate_deficit(add_turb_sum_jxxx, add_turb_jxxx)
+        return add_turb_sum_jxxx, TI_xxx + add_turb_xxx
+
 
 class SquaredSum(SuperpositionModel, AddedTurbulenceSuperpositionModel):
     def __call__(self, value_jxxx):
@@ -78,6 +82,11 @@ class MaxSum(SuperpositionModel, AddedTurbulenceSuperpositionModel):
 class SqrMaxSum(AddedTurbulenceSuperpositionModel):
     def calc_effective_TI(self, TI_xxx, add_turb_jxxx):
         return np.sqrt(TI_xxx**2 + np.max(add_turb_jxxx, 0)**2)
+
+    def accumulate_effective_TI(self, TI_xxx, add_turb_max_jxxx, add_turb_jxxx):
+        if np.ndim(add_turb_max_jxxx):
+            add_turb_jxxx = np.maximum(add_turb_max_jxxx, add_turb_jxxx)
+        return add_turb_jxxx[1:], np.sqrt(TI_xxx**2 + add_turb_jxxx[0]**2)
 
 
 class WeightedSum(SuperpositionModel):
