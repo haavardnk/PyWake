@@ -645,3 +645,13 @@ def test_PropagateUpDownIterative_SquaredSum():
                                    superpositionModel=SquaredSum())
     with pytest.raises(AssertionError, match='PropagateDownwind does not work with SquaredSum when the blockage model has both up and downstream effects'):
         wfm([0, 200, 400], [0, 0, 0], wd=270)
+
+
+@pytest.mark.parametrize('upstream', [False, True])
+def test_add_blockage_upstream_mask(upstream):
+    deficit = np.resize([0., -0., np.inf, -np.inf, np.nan, 1e-310, -3.5], (4, 4))
+    dw_ijlk = np.ones((4, 4))
+    dw_ijlk[1, 2] = -upstream
+    ref = deficit * (dw_ijlk > -1e-10)
+    res, _ = PropagateDownwind(UniformSite(), V80(), NOJDeficit())._add_blockage(deficit, dw_ijlk)
+    assert res.tobytes() == ref.tobytes()

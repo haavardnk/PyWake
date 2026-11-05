@@ -178,16 +178,17 @@ class EngineeringWindFarmModel(WindFarmModel):
         # numerical inaccuracy in the trigonometric functions that calculates dw_ijlk
         rotor_pos = -1e-10
         if self.blockage_deficitModel is None:
-            deficit *= (dw_ijlk > rotor_pos)
             blockage = None
         elif (self.blockage_deficitModel != self.wake_deficitModel):
             blockage = self.blockage_deficitModel.calc_blockage_deficit(
                 dw_ijlk=dw_ijlk, WS_ref_ilk=kwargs[self.blockage_deficitModel.WS_key], **kwargs)
-            deficit *= (dw_ijlk > rotor_pos)
         else:
             # Same model for both wake and blockage
             # keep blockage in deficit and set blockage to zero
-            blockage = np.zeros_like(deficit)
+            return deficit, np.zeros_like(deficit)
+        downstream = dw_ijlk > rotor_pos
+        if not np.all(downstream):
+            deficit *= downstream
         return deficit, blockage
 
     def _calc_deficit(self, dw_ijlk, **kwargs):
