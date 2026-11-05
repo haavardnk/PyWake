@@ -37,9 +37,9 @@ class GaussianOverlapAvgModel(RotorAvgModel):
             raise AttributeError(
                 f"'{func.__self__.__class__.__name__}' has no attribute 'sigma_ijlk', which is needed by the GaussianOverlapAvgModel")
         sigma_ijlk = func.__self__.sigma_ijlk(**kwargs)
-        r_sigma = ((D_dst_ijl / 2)[..., na] / sigma_ijlk).flatten()
-        cw_sigma = gradients.cabs(cw_ijlk / sigma_ijlk).flatten()
-        overlap_factor_ijlk = self.overlap_interpolator(np.array([r_sigma, cw_sigma]).T).reshape(sigma_ijlk.shape)
+        cw_sigma_ijlk = gradients.cabs(cw_ijlk / sigma_ijlk)
+        r_sigma_ijlk = np.broadcast_to((D_dst_ijl / 2)[..., na] / sigma_ijlk, cw_sigma_ijlk.shape)
+        overlap_factor_ijlk = self.overlap_interpolator(np.array([r_sigma_ijlk.flatten(), cw_sigma_ijlk.flatten()]).T).reshape(cw_sigma_ijlk.shape)
         return res_ijlk * overlap_factor_ijlk
 
 

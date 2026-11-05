@@ -14,6 +14,7 @@ import pytest
 from py_wake.deficit_models.gaussian import ZongGaussianDeficit
 from py_wake.turbulence_models.stf import STF2017TurbulenceModel
 from py_wake.deficit_models.no_wake import NoWakeDeficit
+from py_wake.utils.gradients import autograd, cs
 from py_wake.flow_map import XYGrid, XZGrid
 from py_wake.wind_turbines import WindTurbine
 from py_wake.wind_turbines.power_ct_functions import PowerCtTabular
@@ -112,6 +113,13 @@ def test_Mirror(wfm_cls):
         plt.show()
     plt.close('all')
     npt.assert_array_equal(res, ref)
+
+
+def test_Mirror_NOJ_autograd():
+    wfm = PropagateDownwind(UniformSite(), V80(), NOJDeficit(groundModel=Mirror()))
+    kwargs = dict(x=[0, 400], y=[0, 50], wd=[265, 270], ws=10)
+    npt.assert_allclose(wfm.aep_gradients(autograd, ['x', 'y'], **kwargs),
+                        wfm.aep_gradients(cs, ['x', 'y'], **kwargs), rtol=1e-12)
 
 
 @pytest.mark.parametrize('wake,superpositionModel,ref_min_ws_h', [

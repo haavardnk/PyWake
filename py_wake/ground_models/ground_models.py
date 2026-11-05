@@ -32,10 +32,8 @@ class Mirror(GroundModel):
         self.superpositionModel = superpositionModel
 
     def _update_kwargs(self, **kwargs):
-        I = kwargs['IJLK'][0]
-
         def add_mirror_wt(k, v):
-            if (np.shape(v)[0] > 1 or ('_ijlk' in k and I == 1)) and '_jlk' not in k:
+            if np.shape(v)[0] > 1 and '_jlk' not in k:
                 return np.concatenate([v, v], 0)
             else:
                 return v
