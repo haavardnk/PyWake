@@ -134,6 +134,22 @@ class GridInterpolator(object):
         return np.reshape(res, xp_shape[:-1] + self.V.shape[len(self.x):])
 
 
+class LinearGrid2DInterpolator():
+    def __init__(self, x, y, V):
+        self.x0, self.dx = np.array([x[0], y[0]]), np.array([x[1] - x[0], y[1] - y[0]])
+        self.V = np.asarray(V)
+        self.i_max = np.array(self.V.shape, dtype=int) - 1
+
+    def __call__(self, xp):
+        if len(xp) > 2**20:
+            return np.concatenate([self(xp_) for xp_ in np.array_split(xp, len(xp) // 2**20 + 1)])
+        xpif, xpi0 = gradients.modf(np.minimum(np.maximum((xp - self.x0) / self.dx, 0), self.i_max))
+        i, j = np.minimum(xpi0.T[:, na] + [[0], [1]], self.i_max[:, na, na], dtype=int)
+        wi, wj = np.array([1 - xpif.T, xpif.T]).swapaxes(0, 1)
+        v = np.ravel(self.V)[i[:, na] * self.V.shape[1] + j[na]]
+        return (wi[:, na] * wj[na] * v).sum((0, 1))
+
+
 class EqDistRegGrid2DInterpolator():
     def __init__(self, x, y, Z):
         self.x = x

@@ -1,4 +1,6 @@
 
+from contextlib import nullcontext
+
 import matplotlib.pyplot as plt
 import pytest
 import xarray as xr
@@ -9,7 +11,9 @@ from py_wake.tests.check_speed import timeit
 from py_wake.utils.grid_interpolator import (
     EqDistRegGrid2DInterpolator,
     GridInterpolator,
+    LinearGrid2DInterpolator,
 )
+from py_wake.utils.numpy_utils import Numpy32
 
 
 def test_grid_interpolator_not_match():
@@ -47,6 +51,21 @@ def test_grid_interpolator_outside_area_bounds_limit():
     gi = GridInterpolator([[5, 10, 15], [200, 300]], np.arange(6).reshape(3, 2))
     npt.assert_array_equal(gi([(5, 300)]), gi([(5, 300.1)], bounds='limit'))
     npt.assert_array_equal(gi([(5, 200), (5, 200), (5, 300)]), gi([(5, 199.9), (4.8, 200), (5, 301)], bounds='limit'))
+
+
+@pytest.mark.parametrize('build_backend', [nullcontext, Numpy32])
+@pytest.mark.parametrize('call_backend', [nullcontext, Numpy32])
+def test_LinearGrid2DInterpolator(build_backend, call_backend):
+    rng = np.random.default_rng(0)
+    x, y = np.arange(7) * .5 - 1, np.arange(5) * .3 + 2
+    V = rng.normal(size=(7, 5))
+    V[:2, :2], V[3, 2] = -0., np.inf
+    with build_backend():
+        linear = LinearGrid2DInterpolator(x, y, V)
+        grid = GridInterpolator([x, y], V, bounds='limit')
+    with call_backend():
+        xp = np.array(rng.uniform([-2, 1], [3, 4], (2**20 + 1, 2)))
+        assert linear(xp).tobytes() == grid(xp).tobytes()
 
 
 def test_grid_interpolator_2d():

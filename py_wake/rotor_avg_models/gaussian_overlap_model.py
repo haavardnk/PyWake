@@ -5,7 +5,7 @@ from numpy import newaxis as na
 import xarray as xr
 from tqdm import tqdm
 from py_wake.utils.gradients import trapz
-from py_wake.utils.grid_interpolator import GridInterpolator
+from py_wake.utils.grid_interpolator import GridInterpolator, LinearGrid2DInterpolator
 from scipy.interpolate import RectBivariateSpline
 from py_wake.utils import gradients
 
@@ -25,7 +25,7 @@ class GaussianOverlapAvgModel(RotorAvgModel):
             # performs a two-step interpolation which is slower and less accurate than
             # the previous one-step interpolation
             dat = RectBivariateSpline(table.R_sigma.values, table.CW_sigma.values, table.values)(R_sigma, CW_sigma)
-            self._overlap_interpolator = GridInterpolator([R_sigma, CW_sigma], dat, bounds='limit')
+            self._overlap_interpolator = LinearGrid2DInterpolator(R_sigma, CW_sigma, dat)
         return self._overlap_interpolator
 
     def _calc_layout_terms(self, func, cw_ijlk, **kwargs):
